@@ -1,0 +1,6 @@
+[general]
+name=Filter
+description= filter your features
+author=woups
+icon=icon.svg
+version=0.1
