@@ -11,6 +11,7 @@ If you longpress the plugin icon it will delete the filter.
 It is a starting project so, i hope, it will be even better in future
 
 Installation
+
 To install the plugin, you can use this URL :
 https://github.com/woupss/Qfield-filter-plugin/releases/tag/qfield-filter
 
