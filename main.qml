@@ -65,7 +65,7 @@ Item {
             spacing: 6
 
             Label {
-                text: "FILTRER"
+                text: "FILTER"
                 font.bold: true
                 font.pointSize: 13
                 color: "black"
