@@ -11,13 +11,19 @@ Item {
     property var selectedLayer: null
     property bool wasLongPress: false
     property bool filterActive: false
+    
+    // === PERSISTENCE PROPERTIES ===
+    property bool showAllFeatures: false
+    property string savedLayerName: ""
+    property string savedFieldName: ""
+    property string savedFilterText: ""
 
     Component.onCompleted: {
         iface.addItemToPluginsToolbar(toolbarButton)
         updateLayers()
     }
 
-    /* ========= BOUTON TOOLBAR ========= */
+    /* ========= TOOLBAR BUTTON ========= */
     QfToolButton {
         id: toolbarButton
         iconSource: "icon.svg"
@@ -27,7 +33,18 @@ Item {
 
         onClicked: {
             if (!plugin.wasLongPress) {
-                generateFilterUI()
+                if (!filterActive) {
+                    showAllFeatures = false
+                    savedLayerName = ""
+                    savedFieldName = ""
+                    savedFilterText = ""
+                    valueField.text = ""
+                    selectedLayer = null
+                } else {
+                    valueField.text = savedFilterText
+                }
+                
+                updateLayers()
                 searchDialog.open()
             }
             plugin.wasLongPress = false
@@ -38,7 +55,7 @@ Item {
 
         Timer {
             id: holdTimer
-            interval: 500 // 500ms pour le long press
+            interval: 500
             repeat: false
             onTriggered: {
                 plugin.wasLongPress = true
@@ -54,7 +71,7 @@ Item {
         parent: mainWindow.contentItem
         modal: true
         width: 350
-        height: 300
+        height: 340
         x: (mainWindow.width - width)/2
         y: (mainWindow.height - height)/2 - 40
         background: Rectangle { color: "white"; border.color: "#80cc28"; border.width: 3; radius: 8 }
@@ -67,10 +84,12 @@ Item {
             Label {
                 text: "FILTER"
                 font.bold: true
-                font.pointSize: 13
+                font.pointSize: 18
                 color: "black"
                 horizontalAlignment: Text.AlignHCenter
                 Layout.fillWidth: true
+				Layout.topMargin: -10
+				Layout.bottomMargin: 5
             }
 
             QfComboBox {
@@ -83,6 +102,7 @@ Item {
                         selectedLayer = null
                         fieldSelector.model = ["Select a field"]
                         fieldSelector.currentIndex = 0
+                        updateApplyState()
                         return
                     }
 
@@ -96,7 +116,10 @@ Item {
                 id: fieldSelector
                 Layout.fillWidth: true
                 model: []
+                
+                // FIX: Listen to TextChanged as well to catch the update immediately
                 onCurrentIndexChanged: updateApplyState()
+                onCurrentTextChanged: updateApplyState()
             }
 
             Label { text: "Filter value(s) (separate by ;) :" }
@@ -105,6 +128,20 @@ Item {
                 Layout.fillWidth: true
                 placeholderText: "Ex: 00123;aBc;ABC;AbCd"
                 onTextChanged: updateApplyState()
+            }
+
+            CheckBox {
+                id: showAllCheck
+                text: "Show all geometries (+filtered)"
+                checked: showAllFeatures
+                Layout.fillWidth: true
+                
+                onToggled: {
+                    showAllFeatures = checked
+                    if (filterActive) {
+                        applyFilter()
+                    }
+                }
             }
 
             RowLayout {
@@ -142,7 +179,8 @@ Item {
         }
     }
 
-    /* ========= CHARGEMENT DES COUCHES ========= */
+    /* ========= LOGIC ========= */
+
     function updateLayers() {
         var layers = ProjectUtils.mapLayers(qgisProject)
         var names = []
@@ -158,9 +196,15 @@ Item {
 
         layerSelector.model = names
 
-        if (!filterActive) {
+        if (filterActive && savedLayerName !== "") {
+            var idx = names.indexOf(savedLayerName)
+            if (idx >= 0) {
+                layerSelector.currentIndex = idx
+            } else {
+                layerSelector.currentIndex = 0
+            }
+        } else {
             layerSelector.currentIndex = 0
-            selectedLayer = null
         }
     }
 
@@ -172,17 +216,11 @@ Item {
         return null
     }
 
-    /* ========= RÉCUPÉRATION DES CHAMPS ========= */
     function getFields(layer) {
-        if (!layer || !layer.fields) {
-            mainWindow.displayToast("No layer or field found.")
-            return []
-        }
-
+        if (!layer || !layer.fields) return []
+        
         var fields = layer.fields
-
-        if (fields.names)
-            return fields.names.slice().sort()
+        if (fields.names) return fields.names.slice().sort()
 
         var fieldNames = []
         for (var i = 0; i < fields.length; i++) {
@@ -190,9 +228,7 @@ Item {
             if (f && typeof f.name === "function")
                 fieldNames.push(f.name())
         }
-
-        if (fieldNames.length > 0)
-            return fieldNames.sort()
+        if (fieldNames.length > 0) return fieldNames.sort()
 
         var ids = layer.attributeList()
         return ids.map(i => "field_" + i)
@@ -207,23 +243,23 @@ Item {
 
         var fields = getFields(selectedLayer)
 
-        var previousField = filterActive ? fieldSelector.currentText : null
-
         if (!filterActive)
             fields.unshift("Select a field")
 
         fieldSelector.model = fields
 
-        if (filterActive && previousField) {
-            var index = fields.indexOf(previousField)
-            fieldSelector.currentIndex = index >= 0 ? index : 0
-        } else if (!filterActive) {
+        if (filterActive && savedFieldName !== "") {
+            var idx = fields.indexOf(savedFieldName)
+            if (idx >= 0) {
+                fieldSelector.currentIndex = idx
+            } else {
+                fieldSelector.currentIndex = 0
+            }
+        } else {
             fieldSelector.currentIndex = 0
         }
-    }
-
-    function generateFilterUI() {
-        updateFields()
+        
+        // Ensure state is updated after fields are populated
         updateApplyState()
     }
 
@@ -235,7 +271,6 @@ Item {
             valueField.text.length > 0
     }
 
-    /* ========= FILTRAGE INSENSIBLE À LA CASSE + ESPACES/CHARACTÈRES SPÉCIAUX ========= */
     function escapeValue(value) {
         return value.trim().replace(/'/g, "''");
     }
@@ -244,8 +279,12 @@ Item {
         if (!selectedLayer || !fieldSelector.currentText || !valueField.text) return
 
         try {
-            var fieldName = fieldSelector.currentText
-            var values = valueField.text
+            savedLayerName = layerSelector.currentText
+            savedFieldName = fieldSelector.currentText
+            savedFilterText = valueField.text
+
+            var fieldName = savedFieldName
+            var values = savedFilterText
                 .split(";")
                 .map(v => escapeValue(v.toLowerCase()))
                 .filter(v => v.length > 0)
@@ -254,16 +293,24 @@ Item {
 
             var expr = values.map(v => 'lower("' + fieldName + '") LIKE \'%' + v + '%\'').join(" OR ")
 
-            selectedLayer.subsetString = expr
-            selectedLayer.triggerRepaint()
-
+            // 1. Visibility
+            if (showAllFeatures) {
+                selectedLayer.subsetString = "" 
+            } else {
+                selectedLayer.subsetString = expr
+            }
+            
+            // 2. Highlight
             selectedLayer.removeSelection()
             selectedLayer.selectByExpression(expr)
+            
+            // 3. Refresh
+            selectedLayer.triggerRepaint()
 
             filterActive = true
 
         } catch(e) {
-            mainWindow.displayToast("Erreur filtre : " + e)
+            mainWindow.displayToast("Error: " + e)
         }
     }
 
@@ -276,9 +323,13 @@ Item {
 
         valueField.text = ""
         filterActive = false
+        showAllFeatures = false
+        savedLayerName = ""
+        savedFieldName = ""
+        savedFilterText = ""
+        selectedLayer = null
 
         updateLayers()
-        updateFields()
         updateApplyState()
     }
 }
