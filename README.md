@@ -15,8 +15,10 @@ Installation
 To install the plugin, you can use this URL :
 https://github.com/woupss/Qfield-filter-plugin/releases/tag/qfield-filter
 
+![Screenshot_2025-11-24-23-16-36-151_ch opengis qfield_dev](https://github.com/user-attachments/assets/dbc66b06-0dc3-461d-91b4-7af12258c4e6)
 
-![Screenshot_2025-11-19-14-22-41-776_ch opengis qfield_dev](https://github.com/user-attachments/assets/712eb8af-89c5-40b7-90c3-c9f7cfeff57f)
+![Screenshot_2025-11-24-23-16-51-000_ch opengis qfield_dev](https://github.com/user-attachments/assets/a9a68309-b7f6-4a91-804c-5e77329318e5)
+
 
 BEFORE
 ![Screenshot_2025-11-19-13-24-40-697_ch opengis qfield_dev](https://github.com/user-attachments/assets/f41f89e0-a442-446b-bb3a-b1e2a6f17c12)
