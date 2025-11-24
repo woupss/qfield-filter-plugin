@@ -326,7 +326,7 @@ Item {
             var feature_iterator = LayerUtils.createFeatureIteratorFromExpression(selectedLayer, expression)
             
             var count = 0
-            var max_items = 2000 // Limit to prevent freezing on huge layers
+            var max_items = 400000 // Limit to prevent freezing on huge layers
 
             while (feature_iterator.hasNext() && count < max_items) {
                 var feature = feature_iterator.next()
