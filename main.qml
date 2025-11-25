@@ -38,10 +38,10 @@ Item {
                     savedLayerName = ""
                     savedFieldName = ""
                     savedFilterText = ""
-                    valueField.text = ""
+                    valueField.editText = "" // Changed from text to editText
                     selectedLayer = null
                 } else {
-                    valueField.text = savedFilterText
+                    valueField.editText = savedFilterText
                 }
                 
                 updateLayers()
@@ -71,7 +71,7 @@ Item {
         parent: mainWindow.contentItem
         modal: true
         width: 350
-        height: 340
+        height: mainCol.implicitHeight + 30
         x: (mainWindow.width - width)/2
         y: (mainWindow.height - height)/2 - 40
         background: Rectangle { color: "white"; border.color: "#80cc28"; border.width: 3; radius: 8 }
@@ -88,10 +88,11 @@ Item {
                 color: "black"
                 horizontalAlignment: Text.AlignHCenter
                 Layout.fillWidth: true
-				Layout.topMargin: -10
-				Layout.bottomMargin: 5
+                Layout.topMargin: -10
+                Layout.bottomMargin: 5
             }
 
+            // --- LAYER SELECTOR ---
             QfComboBox {
                 id: layerSelector
                 Layout.fillWidth: true
@@ -102,6 +103,7 @@ Item {
                         selectedLayer = null
                         fieldSelector.model = ["Select a field"]
                         fieldSelector.currentIndex = 0
+                        valueField.model = []
                         updateApplyState()
                         return
                     }
@@ -112,22 +114,48 @@ Item {
                 }
             }
 
+            // --- FIELD SELECTOR ---
             QfComboBox {
                 id: fieldSelector
                 Layout.fillWidth: true
                 model: []
                 
-                // FIX: Listen to TextChanged as well to catch the update immediately
-                onCurrentIndexChanged: updateApplyState()
-                onCurrentTextChanged: updateApplyState()
+                // Trigger value fetch when user selects a field
+                onActivated: {
+                    var selectedName = model[index]
+                    updateValues(selectedName)
+                    updateApplyState()
+                }
+                
+                // Handle initialization cases
+                onCurrentTextChanged: {
+                    if (currentText !== "Select a field" && currentText !== "") {
+                         updateValues(currentText)
+                    }
+                    updateApplyState()
+                }
             }
 
             Label { text: "Filter value(s) (separate by ;) :" }
-            TextField {
+            
+            // --- VALUE SELECTOR (ADAPTED) ---
+            ComboBox {
                 id: valueField
                 Layout.fillWidth: true
-                placeholderText: "Ex: 00123;aBc;ABC;AbCd"
-                onTextChanged: updateApplyState()
+                editable: true 
+                model: []      
+                
+                // Custom background to match the style if needed, or keep default
+                // placeholderText equivalent is tricky in ComboBox, handled via logic mostly
+                
+                onEditTextChanged: updateApplyState()
+                onAccepted: updateApplyState()
+                
+                delegate: ItemDelegate {
+                    text: modelData
+                    width: valueField.width
+                    highlighted: valueField.highlightedIndex === index
+                }
             }
 
             CheckBox {
@@ -218,20 +246,9 @@ Item {
 
     function getFields(layer) {
         if (!layer || !layer.fields) return []
-        
         var fields = layer.fields
         if (fields.names) return fields.names.slice().sort()
-
-        var fieldNames = []
-        for (var i = 0; i < fields.length; i++) {
-            var f = fields[i]
-            if (f && typeof f.name === "function")
-                fieldNames.push(f.name())
-        }
-        if (fieldNames.length > 0) return fieldNames.sort()
-
-        var ids = layer.attributeList()
-        return ids.map(i => "field_" + i)
+        return []
     }
 
     function updateFields() {
@@ -252,23 +269,104 @@ Item {
             var idx = fields.indexOf(savedFieldName)
             if (idx >= 0) {
                 fieldSelector.currentIndex = idx
+                // Pre-load values if we are reloading a saved state
+                updateValues(savedFieldName)
             } else {
                 fieldSelector.currentIndex = 0
             }
         } else {
             fieldSelector.currentIndex = 0
+            valueField.model = []
         }
         
-        // Ensure state is updated after fields are populated
         updateApplyState()
     }
 
+    // === THE VALUE FETCHING LOGIC (ADAPTED FROM SOURCE 2) ===
+    function updateValues(forceName) {
+        // Don't clear model immediately if it's the same field to avoid flicker, 
+        // but here we clear to ensure freshness.
+        valueField.model = []
+        
+        var uiName = (forceName !== undefined) ? forceName : fieldSelector.currentText
+        
+        if (!selectedLayer || uiName === "Select a field" || uiName === "") return
+
+        // 1. Find Logical Index
+        var names = selectedLayer.fields.names
+        var logicalIndex = -1
+        for (var i = 0; i < names.length; i++) {
+            if (names[i] === uiName) {
+                logicalIndex = i
+                break
+            }
+        }
+
+        if (logicalIndex === -1) {
+            // Can happen during switching
+            return
+        }
+
+        // 2. Physical Index Mapping (Corrects FID/Geometry shifts)
+        var realIndex = -1
+        var attributes = selectedLayer.attributeList()
+        
+        if (attributes && logicalIndex < attributes.length) {
+            realIndex = attributes[logicalIndex]
+        } else {
+            realIndex = logicalIndex + 1 // Fallback
+        }
+
+        var uniqueValues = {} 
+        var valuesArray = []
+
+        try {
+            // 3. Iterator with Filter (IS NOT NULL)
+            var expression = "\"" + uiName + "\" IS NOT NULL"
+            var feature_iterator = LayerUtils.createFeatureIteratorFromExpression(selectedLayer, expression)
+            
+            var count = 0
+            var max_items = 10000 // Limit to prevent freezing on huge layers
+
+            while (feature_iterator.hasNext() && count < max_items) {
+                var feature = feature_iterator.next()
+                
+                // 4. Retrieve by Index (Fastest & safest vs geometry shifts)
+                var val = feature.attribute(realIndex)
+                
+                // Fallback: Retrieve by Name
+                if (val === undefined) {
+                    val = feature.attribute(uiName)
+                }
+
+                if (val !== null && val !== undefined) {
+                    var strVal = String(val).trim()
+                    if (strVal !== "" && strVal !== "NULL") {
+                        if (!uniqueValues[strVal]) {
+                            uniqueValues[strVal] = true
+                            valuesArray.push(strVal)
+                        }
+                    }
+                }
+                count++
+            }
+            feature_iterator.close()
+            
+            valuesArray.sort()
+            valueField.model = valuesArray
+
+        } catch (e) {
+            mainWindow.displayToast("Error fetching values: " + e)
+        }
+    }
+
     function updateApplyState() {
+        // Check editText because it's an editable ComboBox now
         applyButton.enabled =
             selectedLayer !== null &&
             fieldSelector.currentText &&
             fieldSelector.currentText !== "Select a field" &&
-            valueField.text.length > 0
+            valueField.editText.length > 0
     }
 
     function escapeValue(value) {
@@ -276,12 +374,12 @@ Item {
     }
 
     function applyFilter() {
-        if (!selectedLayer || !fieldSelector.currentText || !valueField.text) return
+        if (!selectedLayer || !fieldSelector.currentText || !valueField.editText) return
 
         try {
             savedLayerName = layerSelector.currentText
             savedFieldName = fieldSelector.currentText
-            savedFilterText = valueField.text
+            savedFilterText = valueField.editText
 
             var fieldName = savedFieldName
             var values = savedFilterText
@@ -293,14 +391,14 @@ Item {
 
             var expr = values.map(v => 'lower("' + fieldName + '") LIKE \'%' + v + '%\'').join(" OR ")
 
-            // 1. Visibility
+            // 1. Visibility (Controlled by Checkbox)
             if (showAllFeatures) {
                 selectedLayer.subsetString = "" 
             } else {
                 selectedLayer.subsetString = expr
             }
             
-            // 2. Highlight
+            // 2. Highlight (Always selects the filtered items)
             selectedLayer.removeSelection()
             selectedLayer.selectByExpression(expr)
             
@@ -321,7 +419,8 @@ Item {
             selectedLayer.triggerRepaint()
         }
 
-        valueField.text = ""
+        valueField.editText = ""
+        valueField.model = []
         filterActive = false
         showAllFeatures = false
         savedLayerName = ""
