@@ -8,7 +8,7 @@ import org.qgis
 Item {
     id: plugin
     property var mainWindow: iface.mainWindow()
-    property var mapCanvas: iface.mapCanvas() // Added mapCanvas property (needed for zoom)
+    property var mapCanvas: iface.mapCanvas()
     property var selectedLayer: null
     property bool wasLongPress: false
     property bool filterActive: false
@@ -22,6 +22,31 @@ Item {
     Component.onCompleted: {
         iface.addItemToPluginsToolbar(toolbarButton)
         updateLayers()
+    }
+
+    /* ========= TRANSLATION LOGIC (INTERNAL) ========= */
+    function tr(text) {
+        // Detect if the locale is French (starts with "fr")
+        var isFrench = Qt.locale().name.substring(0, 2) === "fr"
+        
+        var dictionary = {
+            "Filter deleted": "Filtre supprimé",
+            "FILTER": "FILTRE",
+            "Select a layer": "Sélectionner une couche",
+            "Select a field": "Sélectionner un champ",
+            "Filter value(s) (separate by ;) :": "Valeur(s) du filtre (séparer par ;) :",
+            "Show all geometries (+filtered)": "Afficher toutes géométries (+filtrées)",
+            "Apply filter": "Appliquer le filtre",
+            "Delete filter": "Supprimer le filtre",
+            "Error fetching values: ": "Erreur récupération valeurs : ",
+            "Error Zoom: ": "Erreur Zoom : ",
+            "Error: ": "Erreur : "
+        }
+
+        if (isFrench && dictionary[text] !== undefined) {
+            return dictionary[text]
+        }
+        return text // Return original English text if not French
     }
 
     /* ========= ZOOM TIMER ========= */
@@ -71,7 +96,7 @@ Item {
             onTriggered: {
                 plugin.wasLongPress = true
                 removeAllFilters()
-                mainWindow.displayToast("Filter deleted")
+                mainWindow.displayToast(tr("Filter deleted"))
             }
         }
     }
@@ -94,7 +119,7 @@ Item {
             spacing: 6
 
             Label {
-                text: "FILTER"
+                text: tr("FILTER")
                 font.bold: true
                 font.pointSize: 18
                 color: "black"
@@ -111,9 +136,10 @@ Item {
                 model: []
 
                 onCurrentTextChanged: {
-                    if (currentText === "Select a layer") {
+                    // We compare against the translated version
+                    if (currentText === tr("Select a layer")) {
                         selectedLayer = null
-                        fieldSelector.model = ["Select a field"]
+                        fieldSelector.model = [tr("Select a field")]
                         fieldSelector.currentIndex = 0
                         valueField.model = []
                         updateApplyState()
@@ -139,14 +165,14 @@ Item {
                 }
                 
                 onCurrentTextChanged: {
-                    if (currentText !== "Select a field" && currentText !== "") {
+                    if (currentText !== tr("Select a field") && currentText !== "") {
                          updateValues(currentText)
                     }
                     updateApplyState()
                 }
             }
 
-            Label { text: "Filter value(s) (separate by ;) :" }
+            Label { text: tr("Filter value(s) (separate by ;) :") }
             
             // --- VALUE SELECTOR ---
             ComboBox {
@@ -167,7 +193,7 @@ Item {
 
             CheckBox {
                 id: showAllCheck
-                text: "Show all geometries (+filtered)"
+                text: tr("Show all geometries (+filtered)")
                 checked: showAllFeatures
                 Layout.fillWidth: true
                 
@@ -185,7 +211,7 @@ Item {
 
                 Button {
                     id: applyButton
-                    text: "Apply filter"
+                    text: tr("Apply filter")
                     enabled: false
                     Layout.fillWidth: true
                     background: Rectangle { color: "#80cc28"; radius: 10 }
@@ -196,11 +222,11 @@ Item {
                 }
 
                 Button {
-                    text: "Delete filter"
+                    text: tr("Delete filter")
                     Layout.fillWidth: true
                     background: Rectangle { color: "#333333"; radius: 10 }
                     contentItem: Text {
-                        text: "Delete filter"
+                        text: tr("Delete filter")
                         color: "white"
                         horizontalAlignment: Text.AlignHCenter
                         verticalAlignment: Text.AlignVCenter
@@ -227,7 +253,7 @@ Item {
         names.sort()
 
         if (!filterActive)
-            names.unshift("Select a layer")
+            names.unshift(tr("Select a layer"))
 
         layerSelector.model = names
 
@@ -260,7 +286,7 @@ Item {
 
     function updateFields() {
         if (!selectedLayer) {
-            fieldSelector.model = ["Select a field"]
+            fieldSelector.model = [tr("Select a field")]
             fieldSelector.currentIndex = 0
             return
         }
@@ -268,7 +294,7 @@ Item {
         var fields = getFields(selectedLayer)
 
         if (!filterActive)
-            fields.unshift("Select a field")
+            fields.unshift(tr("Select a field"))
 
         fieldSelector.model = fields
 
@@ -293,7 +319,8 @@ Item {
         
         var uiName = (forceName !== undefined) ? forceName : fieldSelector.currentText
         
-        if (!selectedLayer || uiName === "Select a field" || uiName === "") return
+        // Check against translated string
+        if (!selectedLayer || uiName === tr("Select a field") || uiName === "") return
 
         var names = selectedLayer.fields.names
         var logicalIndex = -1
@@ -351,7 +378,7 @@ Item {
             valueField.model = valuesArray
 
         } catch (e) {
-            mainWindow.displayToast("Error fetching values: " + e)
+            mainWindow.displayToast(tr("Error fetching values: ") + e)
         }
     }
 
@@ -359,7 +386,7 @@ Item {
         applyButton.enabled =
             selectedLayer !== null &&
             fieldSelector.currentText &&
-            fieldSelector.currentText !== "Select a field" &&
+            fieldSelector.currentText !== tr("Select a field") &&
             valueField.editText.length > 0
     }
 
@@ -420,7 +447,7 @@ Item {
             mapCanvas.refresh();
 
         } catch(e) {
-            mainWindow.displayToast("Error Zoom: " + e)
+            mainWindow.displayToast(tr("Error Zoom: ") + e)
         }
     }
 
@@ -462,7 +489,7 @@ Item {
             filterActive = true
 
         } catch(e) {
-            mainWindow.displayToast("Error: " + e)
+            mainWindow.displayToast(tr("Error: ") + e)
         }
     }
 
