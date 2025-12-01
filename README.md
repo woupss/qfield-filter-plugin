@@ -4,7 +4,7 @@ With it you can select a layer and a field of your project and i will propose a 
 
 You can filter number or text and it is not case sensitive
 
-It will highlight filtered geometries and hide others.
+It will highlight filtered geometries and hide others or show all via a checkbox.
 
 If you longpress the plugin icon it will delete the filter.
 
@@ -13,7 +13,7 @@ It is a starting project so, i hope, it will be even better in future
 Installation
 
 To install the plugin, you can use this URL :
-https://github.com/woupss/Qfield-filter-plugin/releases/tag/qfield-filter
+https://github.com/woupss/qfield-filter-plugin/releases/latest
 
 ![Screenshot_2025-11-24-23-16-36-151_ch opengis qfield_dev](https://github.com/user-attachments/assets/dbc66b06-0dc3-461d-91b4-7af12258c4e6)
 
