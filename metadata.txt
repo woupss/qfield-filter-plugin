@@ -4,4 +4,4 @@ description= filter your features
 author=woupss
 icon=icon.svg
 version=0.4
-homepage=https://github.com/woupss/Qfield-filter-plugin
+homepage=https://github.com/woupss/qfield-filter-plugin
