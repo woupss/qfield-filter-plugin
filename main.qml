@@ -106,10 +106,9 @@ Item {
         id: searchDialog
         parent: mainWindow.contentItem
         modal: true
-        width: 350
+        width: Math.min(450, mainWindow.width * 0.90)
         height: mainCol.implicitHeight + 30
-        x: (mainWindow.width - width)/2
-        y: (mainWindow.height - height)/2 - 40
+        anchors.centerIn: parent 
         background: Rectangle { color: "white"; border.color: "#80cc28"; border.width: 3; radius: 8 }
 
         ColumnLayout {
