@@ -44,8 +44,11 @@ Item {
         }
     }
 
+    /* ========= TRANSLATION LOGIC ========= */
     function tr(text) {
+        // Détection simple du français (code "fr_FR" ou "fr")
         var isFrench = Qt.locale().name.substring(0, 2) === "fr"
+        
         var dictionary = {
             "Filter deleted": "Filtre supprimé",
             "FILTER": "FILTRE",
@@ -59,8 +62,11 @@ Item {
             "Error fetching values: ": "Erreur récupération valeurs : ",
             "Error Zoom: ": "Erreur Zoom : ",
             "Error: ": "Erreur : ",
-            "Searching...": "Recherche..."
+            "Searching...": "Recherche...",
+            // Ajout de la traduction pour le placeholder
+            "Type to search (ex: Paris; Lyon)...": "Tapez pour rechercher (ex: Paris; Lyon)..."
         }
+        
         if (isFrench && dictionary[text] !== undefined) return dictionary[text]
         return text 
     }
@@ -146,7 +152,6 @@ Item {
             
             return centerPos - offset
         }
-        // ----------------------------------------------------
 
         background: Rectangle {
             color: "white"
@@ -237,7 +242,8 @@ Item {
                 Layout.preferredHeight: 35
                 topPadding: 6
                 bottomPadding: 6
-                placeholderText: "Tapez pour rechercher (ex: Paris; Lyon)..."
+                // Utilisation de la fonction tr() pour la traduction
+                placeholderText: tr("Type to search (ex: Paris; Lyon)...")
                 Layout.bottomMargin: 2
 
                 property var model: []
@@ -338,7 +344,6 @@ Item {
                                 // immédiatement sur le mot complet
                                 valueField.model = []
                             }
-                            // --------------------------------
                         }
                     }
                 }
@@ -470,18 +475,13 @@ Item {
 
     // === FONCTION DE RECHERCHE MULTI-VALEURS ===
     function performDynamicSearch() {
-        // 1. On récupère tout le texte
         var rawText = valueField.text
-        
-        // 2. On découpe par les points-virgules pour trouver le dernier morceau
         var parts = rawText.split(";")
-        var lastPart = parts[parts.length - 1] // Le dernier élément
+        var lastPart = parts[parts.length - 1]
         
-        // 3. C'est ce texte qu'on nettoie et qu'on cherche
         var searchText = lastPart.trim()
         var uiName = fieldSelector.currentText
         
-        // Si le dernier morceau est vide (ex: "Paris; "), on ferme la liste
         if (!selectedLayer || uiName === tr("Select a field") || searchText === "") {
             valueField.model = []
             suggestionPopup.close()
@@ -512,7 +512,6 @@ Item {
         var valuesArray = []
         
         try {
-            // Recherche insensible à la casse sur le DERNIER MOT seulement
             var escapedText = searchText.replace(/'/g, "''")
             var expression = "\"" + uiName + "\" ILIKE '%" + escapedText + "%'"
             
@@ -531,8 +530,6 @@ Item {
                 if (val !== null && val !== undefined) {
                     var strVal = String(val).trim()
                     if (strVal !== "" && strVal !== "NULL") {
-                        // On vérifie que cette valeur n'est pas DÉJÀ dans la liste saisie
-                        // Pour éviter de proposer "Paris" si on a déjà tapé "Paris;"
                         var alreadyInText = false
                         for(var p=0; p<parts.length-1; p++) {
                             if (parts[p].trim() === strVal) {
