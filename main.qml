@@ -17,6 +17,9 @@ Item {
     property bool wasLongPress: false
     property bool filterActive: false
     
+    // Nouvelle propriété pour suivre l'état du formulaire
+    property bool isFormVisible: false
+    
     // === PERSISTENCE PROPERTIES ===
     property bool showAllFeatures: false
     property bool showFeatureList: false 
@@ -28,6 +31,9 @@ Item {
     Component.onCompleted: {
         iface.addItemToPluginsToolbar(toolbarButton)
         updateLayers()
+        if (featureFormItem) {
+            isFormVisible = featureFormItem.visible
+        }
     }
 
     // === GESTION DES EVENEMENTS DU FORMULAIRE ===
@@ -35,6 +41,8 @@ Item {
         target: featureFormItem
         
         function onVisibleChanged() {
+            plugin.isFormVisible = featureFormItem.visible
+            
             if (!featureFormItem.visible) {
                 showFeatureList = false 
                 if (filterActive) {
@@ -46,7 +54,6 @@ Item {
 
     /* ========= TRANSLATION LOGIC ========= */
     function tr(text) {
-        // Détection simple du français (code "fr_FR" ou "fr")
         var isFrench = Qt.locale().name.substring(0, 2) === "fr"
         
         var dictionary = {
@@ -63,8 +70,8 @@ Item {
             "Error Zoom: ": "Erreur Zoom : ",
             "Error: ": "Erreur : ",
             "Searching...": "Recherche...",
-            // Ajout de la traduction pour le placeholder
-            "Type to search (ex: Paris; Lyon)...": "Tapez pour rechercher (ex: Paris; Lyon)..."
+            "Type to search (ex: Paris; Lyon)...": "Tapez pour rechercher (ex: Paris; Lyon)...",
+            "Active Filter:": "Filtre Actif :" 
         }
         
         if (isFrench && dictionary[text] !== undefined) return dictionary[text]
@@ -79,12 +86,117 @@ Item {
         onTriggered: performZoom()
     }
     
-    // Timer pour ne pas lancer la recherche à chaque touche (Debounce)
     Timer {
         id: searchDelayTimer
-        interval: 500 // Attend 500ms après la dernière frappe avant de chercher
+        interval: 500
         repeat: false
         onTriggered: performDynamicSearch()
+    }
+
+    /* ========= BANDEAU D'INFORMATION (STYLE TOAST) ========= */
+    Rectangle {
+        id: infoBanner
+        parent: mainWindow.contentItem 
+        z: 9999 
+        
+        height: 32 
+        
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: 60 
+        
+        // Centrage horizontal
+        anchors.horizontalCenter: parent.horizontalCenter
+        
+        // Largeur adaptative
+        // On retire 120px (60px de chaque côté) pour garantir que le centrage 
+        // ne pousse pas le rectangle dans la marge gauche.
+        width: Math.min(bannerLayout.implicitWidth + 30, parent.width - 120)
+        
+        radius: 16 
+        
+        color: "#B3333333" 
+        
+        border.width: 0
+
+        visible: plugin.filterActive && !plugin.isFormVisible
+
+        RowLayout {
+            id: bannerLayout
+            anchors.fill: parent
+            anchors.leftMargin: 15
+            anchors.rightMargin: 15
+            spacing: 10
+
+            Rectangle {
+                width: 8
+                height: 8
+                radius: 4
+                color: "#80cc28"
+                Layout.alignment: Qt.AlignVCenter
+            }
+
+            Item {
+                id: clipContainer
+                // Le container essaie de prendre la largeur du texte...
+                Layout.preferredWidth: bannerText.contentWidth
+                // ...mais accepte de rétrécir si l'écran est trop petit
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                clip: true 
+
+                Text {
+                    id: bannerText
+                    
+                    text: {
+                        var val = plugin.savedFilterText.trim()
+                        if (val.endsWith(";")) {
+                            val = val.substring(0, val.length - 1).trim()
+                        }
+                        return plugin.savedLayerName + " | " + plugin.savedFieldName + " : " + val
+                    }
+                    
+                    color: "white" 
+                    font.bold: true
+                    font.pixelSize: 13 
+                    
+                    // CORRECTION ICI : Alignement et Wrapping
+                    // On force le texte à rester sur une seule ligne pour que le calcul de largeur soit juste.
+                    wrapMode: Text.NoWrap 
+                    
+                    // On force l'alignement à gauche pour voir le début du texte immédiatement.
+                    horizontalAlignment: Text.AlignLeft
+                    verticalAlignment: Text.AlignVCenter
+                    
+                    // On centre verticalement dans le container
+                    anchors.verticalCenter: parent.verticalCenter
+                    
+                    // On s'assure que le texte commence bien à gauche (x=0) par défaut
+                    x: 0
+                    
+                    SequentialAnimation on x {
+                        // L'animation ne se lance que si le texte est PLUS GRAND que le container visible
+                        running: clipContainer && bannerText.contentWidth > clipContainer.width && infoBanner.visible
+                        loops: Animation.Infinite
+                        
+                        PauseAnimation { duration: 2000 }
+
+                        NumberAnimation {
+                            to: (clipContainer ? clipContainer.width : 0) - bannerText.contentWidth
+                            duration: Math.max(0, (bannerText.contentWidth - (clipContainer ? clipContainer.width : 0)) * 20 + 2000)
+                            easing.type: Easing.InOutQuad
+                        }
+
+                        PauseAnimation { duration: 1000 }
+
+                        NumberAnimation {
+                            to: 0
+                            duration: Math.max(0, (bannerText.contentWidth - (clipContainer ? clipContainer.width : 0)) * 20 + 2000)
+                            easing.type: Easing.InOutQuad
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /* ========= TOOLBAR BUTTON ========= */
@@ -136,20 +248,12 @@ Item {
         width: Math.min(450, mainWindow.width * 0.90)
         height: mainCol.implicitHeight + 30
         
-        // Calcul pour centrer horizontalement
         x: (parent.width - width) / 2
         
-        // Calcul pour la hauteur avec décalage en mode portrait
         y: {
-            // Position centrale théorique
             var centerPos = (parent.height - height) / 2
-            
-            // Est-on en mode portrait ?
             var isPortrait = parent.height > parent.width
-            
-            // Si portrait, on remonte de 10% de la hauteur de l'écran
             var offset = isPortrait ? (parent.height * 0.10) : 0
-            
             return centerPos - offset
         }
 
@@ -224,7 +328,6 @@ Item {
                     updateApplyState()
                 }
                 onCurrentTextChanged: {
-                    // On ne charge plus rien automatiquement ici pour éviter le freeze
                     updateApplyState()
                 }
             }
@@ -235,24 +338,20 @@ Item {
                 Layout.bottomMargin: -10
             }
 
-            // === TEXTFIELD MULTI-VALEURS ===
             TextField {
                 id: valueField
                 Layout.fillWidth: true
                 Layout.preferredHeight: 35
                 topPadding: 6
                 bottomPadding: 6
-                // Utilisation de la fonction tr() pour la traduction
                 placeholderText: tr("Type to search (ex: Paris; Lyon)...")
                 Layout.bottomMargin: 2
 
                 property var model: []
                 property bool isLoading: false
 
-                // Gestion du retour dans le champ
                 onActiveFocusChanged: {
                     if (activeFocus) {
-                        // On vérifie s'il y a un terme en cours de saisie (après le dernier ;)
                         var parts = text.split(";")
                         var lastPart = parts[parts.length - 1].trim()
                         
@@ -264,7 +363,6 @@ Item {
                 }
 
                 onTextEdited: {
-                    // On ne déclenche la recherche que si le dernier morceau n'est pas vide
                     var parts = text.split(";")
                     var lastPart = parts[parts.length - 1].trim()
 
@@ -322,17 +420,14 @@ Item {
                             background: Rectangle {
                                 color: parent.highlighted ? "#e0e0e0" : "transparent"
                             }
-                            // --- LOGIQUE D'AJOUT MULTIPLE ---
                             onClicked: {
                                 var currentText = valueField.text
                                 var lastSep = currentText.lastIndexOf(";")
                                 
                                 var newText = ""
                                 if (lastSep === -1) {
-                                    // Premier mot
                                     newText = modelData + " ; "
                                 } else {
-                                    // On garde le début, on remplace la fin
                                     var prefix = currentText.substring(0, lastSep + 1)
                                     newText = prefix + " " + modelData + " ; "
                                 }
@@ -340,8 +435,6 @@ Item {
                                 valueField.text = newText
                                 suggestionPopup.close()
                                 valueField.forceActiveFocus()
-                                // On vide le modèle pour éviter que la popup ne se rouvre
-                                // immédiatement sur le mot complet
                                 valueField.model = []
                             }
                         }
@@ -358,7 +451,8 @@ Item {
                 Layout.bottomMargin: -12
                 onToggled: {
                     showAllFeatures = checked
-                    if (filterActive) applyFilter(true)
+                    // Modification : applyFilter(true, false) -> false pour ne pas ZOOMER
+                    if (filterActive) applyFilter(true, false)
                 }
             }
 
@@ -373,7 +467,8 @@ Item {
                     showFeatureList = checked
                     if (filterActive) {
                         if (checked) {
-                            applyFilter(true)
+                            // Modification : applyFilter(true, false) -> false pour ne pas ZOOMER
+                            applyFilter(true, false)
                         } else {
                             if (featureFormItem) {
                                 featureFormItem.visible = false
@@ -394,7 +489,8 @@ Item {
                     Layout.fillWidth: true
                     background: Rectangle { color: "#80cc28"; radius: 10 }
                     onClicked: {
-                        applyFilter(true) 
+                        // Modification : applyFilter(true, true) -> true pour OUI ZOOMER
+                        applyFilter(true, true) 
                         searchDialog.close()
                     }
                 }
@@ -473,7 +569,6 @@ Item {
         updateApplyState()
     }
 
-    // === FONCTION DE RECHERCHE MULTI-VALEURS ===
     function performDynamicSearch() {
         var rawText = valueField.text
         var parts = rawText.split(";")
@@ -572,7 +667,6 @@ Item {
         return value.trim().replace(/'/g, "''");
     }
 
-    // === ZOOM FUNCTION ===
     function performZoom() {
         if (!selectedLayer) return;
         var bbox = selectedLayer.boundingBoxOfSelected();
@@ -621,10 +715,12 @@ Item {
         }
     }
 
-    // === APPLY FILTER ===
-    function applyFilter(allowFormOpen) {
+    // Modification : ajout du paramètre doZoom
+    function applyFilter(allowFormOpen, doZoom) {
         if (!selectedLayer || !fieldSelector.currentText || !valueField.text) return
         if (allowFormOpen === undefined) allowFormOpen = true
+        // Par défaut, si non précisé, on zoome (pour compatibilité)
+        if (doZoom === undefined) doZoom = true
 
         try {
             savedLayerName = layerSelector.currentText
@@ -658,7 +754,10 @@ Item {
                 }
             } 
             
-            zoomTimer.start()
+            // On ne zoome que si doZoom est vrai
+            if (doZoom) {
+                zoomTimer.start()
+            }
             filterActive = true
 
         } catch(e) {
