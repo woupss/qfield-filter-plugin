@@ -14,11 +14,6 @@ Item {
     // Récupération de l'objet FeatureForm
     property var featureFormItem: iface.findItemByObjectName("featureForm")
 
-    // --- NOUVEAU : Récupération du Welcome Screen ---
-    property var welcomeScreenItem: iface.findItemByObjectName("welcomeScreen")
-    property bool isWelcomeVisible: false
-    // ------------------------------------------------
-
     property bool wasLongPress: false
     property bool filterActive: false
     
@@ -39,10 +34,6 @@ Item {
         if (featureFormItem) {
             isFormVisible = featureFormItem.visible
         }
-        // Initialisation visibilité WelcomeScreen
-        if (welcomeScreenItem) {
-            isWelcomeVisible = welcomeScreenItem.visible
-        }
     }
 
     // === GESTION DES EVENEMENTS DU FORMULAIRE ===
@@ -58,14 +49,6 @@ Item {
                     refreshVisualsOnly()
                 }
             }
-        }
-    }
-    
-    // === GESTION DES EVENEMENTS DU WELCOME SCREEN ===
-    Connections {
-        target: welcomeScreenItem
-        function onVisibleChanged() {
-            plugin.isWelcomeVisible = welcomeScreenItem.visible
         }
     }
 
@@ -113,7 +96,12 @@ Item {
     /* ========= BANDEAU D'INFORMATION (STYLE TOAST) ========= */
     Rectangle {
         id: infoBanner
-        parent: mainWindow.contentItem 
+        
+        // MODIFICATION MAJEURE ICI : 
+        // On attache le bandeau à la carte (mapCanvas) et non à la fenêtre principale.
+        // Ainsi, si la carte n'est pas affichée (WelcomeScreen), le bandeau ne l'est pas non plus.
+        parent: mapCanvas 
+        
         z: 9999 
         
         height: 32 
@@ -131,8 +119,7 @@ Item {
         
         border.width: 0
 
-        // MODIFICATION ICI : Ajout de !plugin.isWelcomeVisible
-        visible: plugin.filterActive && !plugin.isFormVisible && !plugin.isWelcomeVisible
+        visible: plugin.filterActive && !plugin.isFormVisible
 
         RowLayout {
             id: bannerLayout
@@ -673,7 +660,7 @@ Item {
         return value.trim().replace(/'/g, "''");
     }
 
-    // --- FONCTION ZOOM ADAPTATIVE (MODIFIÉE) ---
+    // --- FONCTION ZOOM ADAPTATIVE (Nouvelle version) ---
     function performZoom() {
         if (!selectedLayer) return;
         var bbox = selectedLayer.boundingBoxOfSelected();
@@ -687,46 +674,49 @@ Item {
                 mapCanvas.mapSettings.destinationCrs
             )
 
-            // Calcul du centre réel
+            // Calcul du centre réel de la géométrie sélectionnée
             var centerX = reprojectedExtent.xMinimum + (reprojectedExtent.width / 2.0);
             var centerY = reprojectedExtent.yMinimum + (reprojectedExtent.height / 2.0);
 
             var isPoint = (reprojectedExtent.width < 0.00001 && reprojectedExtent.height < 0.00001);
 
             if (isPoint) {
+                // Gestion point : simple buffer
                 var buffer = (Math.abs(centerX) > 180) ? 50.0 : 0.001;
                 reprojectedExtent.xMinimum = centerX - buffer;
                 reprojectedExtent.xMaximum = centerX + buffer;
                 reprojectedExtent.yMinimum = centerY - buffer;
                 reprojectedExtent.yMaximum = centerY + buffer;
             } else {
-                // LOGIQUE ADAPTATIVE PORTRAIT / PAYSAGE
-                
-                // IMPORTANT: .extent est une propriété, pas une fonction !
+                // LOGIQUE ADAPTATIVE (Portrait / Paysage)
+                // On récupère l'extent de la carte pour connaître le ratio de l'écran
                 var currentMapExtent = mapCanvas.mapSettings.extent; 
                 
                 var screenRatio = currentMapExtent.width / currentMapExtent.height;
                 var geomRatio = reprojectedExtent.width / reprojectedExtent.height;
-                var marginScale = 1.1; // 10% de marge
+                var marginScale = 1.1; // 10% de marge de sécurité
 
                 var newWidth = 0;
                 var newHeight = 0;
 
+                // On compare les ratios pour savoir si on est limité par la largeur ou la hauteur
                 if (geomRatio > screenRatio) {
-                    // La géométrie est plus large (relativement) -> caler sur la largeur
+                    // Géométrie "plus large" que l'écran -> on cale sur la largeur
                     newWidth = reprojectedExtent.width * marginScale;
                     newHeight = newWidth / screenRatio;
                 } else {
-                    // La géométrie est plus haute (relativement) -> caler sur la hauteur
+                    // Géométrie "plus haute" que l'écran -> on cale sur la hauteur
                     newHeight = reprojectedExtent.height * marginScale;
                     newWidth = newHeight * screenRatio;
                 }
                 
+                // On centre la nouvelle emprise sur la géométrie
                 reprojectedExtent.xMinimum = centerX - (newWidth / 2.0);
                 reprojectedExtent.xMaximum = centerX + (newWidth / 2.0);
                 reprojectedExtent.yMinimum = centerY - (newHeight / 2.0);
                 reprojectedExtent.yMaximum = centerY + (newHeight / 2.0);
             }
+            
             mapCanvas.mapSettings.setExtent(reprojectedExtent, true);
             mapCanvas.refresh();
         } catch(e) {
@@ -739,7 +729,7 @@ Item {
              mapCanvas.mapSettings.selectionColor = "#ff0000"
              selectedLayer.triggerRepaint()
              mapCanvas.refresh()
-             // PAS de zoom automatique lors du rafraîchissement visuel
+             // MODIFICATION : Suppression du zoom automatique lors du rafraîchissement visuel
              // zoomTimer.start()
         }
     }
