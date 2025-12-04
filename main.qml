@@ -14,6 +14,11 @@ Item {
     // Récupération de l'objet FeatureForm
     property var featureFormItem: iface.findItemByObjectName("featureForm")
 
+    // --- NOUVEAU : Récupération du Welcome Screen ---
+    property var welcomeScreenItem: iface.findItemByObjectName("welcomeScreen")
+    property bool isWelcomeVisible: false
+    // ------------------------------------------------
+
     property bool wasLongPress: false
     property bool filterActive: false
     
@@ -34,6 +39,10 @@ Item {
         if (featureFormItem) {
             isFormVisible = featureFormItem.visible
         }
+        // Initialisation visibilité WelcomeScreen
+        if (welcomeScreenItem) {
+            isWelcomeVisible = welcomeScreenItem.visible
+        }
     }
 
     // === GESTION DES EVENEMENTS DU FORMULAIRE ===
@@ -49,6 +58,14 @@ Item {
                     refreshVisualsOnly()
                 }
             }
+        }
+    }
+    
+    // === GESTION DES EVENEMENTS DU WELCOME SCREEN ===
+    Connections {
+        target: welcomeScreenItem
+        function onVisibleChanged() {
+            plugin.isWelcomeVisible = welcomeScreenItem.visible
         }
     }
 
@@ -104,12 +121,8 @@ Item {
         anchors.bottom: parent.bottom
         anchors.bottomMargin: 60 
         
-        // Centrage horizontal
         anchors.horizontalCenter: parent.horizontalCenter
         
-        // Largeur adaptative
-        // On retire 120px (60px de chaque côté) pour garantir que le centrage 
-        // ne pousse pas le rectangle dans la marge gauche.
         width: Math.min(bannerLayout.implicitWidth + 30, parent.width - 120)
         
         radius: 16 
@@ -118,7 +131,8 @@ Item {
         
         border.width: 0
 
-        visible: plugin.filterActive && !plugin.isFormVisible
+        // MODIFICATION ICI : Ajout de !plugin.isWelcomeVisible
+        visible: plugin.filterActive && !plugin.isFormVisible && !plugin.isWelcomeVisible
 
         RowLayout {
             id: bannerLayout
@@ -137,9 +151,7 @@ Item {
 
             Item {
                 id: clipContainer
-                // Le container essaie de prendre la largeur du texte...
                 Layout.preferredWidth: bannerText.contentWidth
-                // ...mais accepte de rétrécir si l'écran est trop petit
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 clip: true 
@@ -159,22 +171,16 @@ Item {
                     font.bold: true
                     font.pixelSize: 13 
                     
-                    // CORRECTION ICI : Alignement et Wrapping
-                    // On force le texte à rester sur une seule ligne pour que le calcul de largeur soit juste.
                     wrapMode: Text.NoWrap 
                     
-                    // On force l'alignement à gauche pour voir le début du texte immédiatement.
                     horizontalAlignment: Text.AlignLeft
                     verticalAlignment: Text.AlignVCenter
                     
-                    // On centre verticalement dans le container
                     anchors.verticalCenter: parent.verticalCenter
                     
-                    // On s'assure que le texte commence bien à gauche (x=0) par défaut
                     x: 0
                     
                     SequentialAnimation on x {
-                        // L'animation ne se lance que si le texte est PLUS GRAND que le container visible
                         running: clipContainer && bannerText.contentWidth > clipContainer.width && infoBanner.visible
                         loops: Animation.Infinite
                         
@@ -451,7 +457,7 @@ Item {
                 Layout.bottomMargin: -12
                 onToggled: {
                     showAllFeatures = checked
-                    // Modification : applyFilter(true, false) -> false pour ne pas ZOOMER
+                    // PAS de zoom au clic sur la checkbox (2ème arg = false)
                     if (filterActive) applyFilter(true, false)
                 }
             }
@@ -467,7 +473,7 @@ Item {
                     showFeatureList = checked
                     if (filterActive) {
                         if (checked) {
-                            // Modification : applyFilter(true, false) -> false pour ne pas ZOOMER
+                            // PAS de zoom au clic sur la checkbox (2ème arg = false)
                             applyFilter(true, false)
                         } else {
                             if (featureFormItem) {
@@ -489,7 +495,7 @@ Item {
                     Layout.fillWidth: true
                     background: Rectangle { color: "#80cc28"; radius: 10 }
                     onClicked: {
-                        // Modification : applyFilter(true, true) -> true pour OUI ZOOMER
+                        // OUI Zoom au clic sur le bouton (2ème arg = true)
                         applyFilter(true, true) 
                         searchDialog.close()
                     }
@@ -667,6 +673,7 @@ Item {
         return value.trim().replace(/'/g, "''");
     }
 
+    // --- FONCTION ZOOM ADAPTATIVE (MODIFIÉE) ---
     function performZoom() {
         if (!selectedLayer) return;
         var bbox = selectedLayer.boundingBoxOfSelected();
@@ -679,25 +686,46 @@ Item {
                 selectedLayer.crs,
                 mapCanvas.mapSettings.destinationCrs
             )
-            var cx = reprojectedExtent.xMinimum + (reprojectedExtent.width / 2.1);
-            var cy = reprojectedExtent.yMinimum + (reprojectedExtent.height / 2.1);
+
+            // Calcul du centre réel
+            var centerX = reprojectedExtent.xMinimum + (reprojectedExtent.width / 2.0);
+            var centerY = reprojectedExtent.yMinimum + (reprojectedExtent.height / 2.0);
+
             var isPoint = (reprojectedExtent.width < 0.00001 && reprojectedExtent.height < 0.00001);
 
             if (isPoint) {
-                var buffer = (Math.abs(cx) > 180) ? 50.0 : 0.001;
-                reprojectedExtent.xMinimum = cx - buffer;
-                reprojectedExtent.xMaximum = cx + buffer;
-                reprojectedExtent.yMinimum = cy - buffer;
-                reprojectedExtent.yMaximum = cy + buffer;
+                var buffer = (Math.abs(centerX) > 180) ? 50.0 : 0.001;
+                reprojectedExtent.xMinimum = centerX - buffer;
+                reprojectedExtent.xMaximum = centerX + buffer;
+                reprojectedExtent.yMinimum = centerY - buffer;
+                reprojectedExtent.yMaximum = centerY + buffer;
             } else {
-                var w = reprojectedExtent.width;
-                var h = reprojectedExtent.height;
-                var newW = w * 1.3; 
-                var newH = h * 1.3;
-                reprojectedExtent.xMinimum = cx - (newW / 2.1);
-                reprojectedExtent.xMaximum = cx + (newW / 2.1);
-                reprojectedExtent.yMinimum = cy - (newH / 2.1);
-                reprojectedExtent.yMaximum = cy + (newH / 2.1);
+                // LOGIQUE ADAPTATIVE PORTRAIT / PAYSAGE
+                
+                // IMPORTANT: .extent est une propriété, pas une fonction !
+                var currentMapExtent = mapCanvas.mapSettings.extent; 
+                
+                var screenRatio = currentMapExtent.width / currentMapExtent.height;
+                var geomRatio = reprojectedExtent.width / reprojectedExtent.height;
+                var marginScale = 1.1; // 10% de marge
+
+                var newWidth = 0;
+                var newHeight = 0;
+
+                if (geomRatio > screenRatio) {
+                    // La géométrie est plus large (relativement) -> caler sur la largeur
+                    newWidth = reprojectedExtent.width * marginScale;
+                    newHeight = newWidth / screenRatio;
+                } else {
+                    // La géométrie est plus haute (relativement) -> caler sur la hauteur
+                    newHeight = reprojectedExtent.height * marginScale;
+                    newWidth = newHeight * screenRatio;
+                }
+                
+                reprojectedExtent.xMinimum = centerX - (newWidth / 2.0);
+                reprojectedExtent.xMaximum = centerX + (newWidth / 2.0);
+                reprojectedExtent.yMinimum = centerY - (newHeight / 2.0);
+                reprojectedExtent.yMaximum = centerY + (newHeight / 2.0);
             }
             mapCanvas.mapSettings.setExtent(reprojectedExtent, true);
             mapCanvas.refresh();
@@ -711,11 +739,11 @@ Item {
              mapCanvas.mapSettings.selectionColor = "#ff0000"
              selectedLayer.triggerRepaint()
              mapCanvas.refresh()
-             zoomTimer.start()
+             // PAS de zoom automatique lors du rafraîchissement visuel
+             // zoomTimer.start()
         }
     }
 
-    // Modification : ajout du paramètre doZoom
     function applyFilter(allowFormOpen, doZoom) {
         if (!selectedLayer || !fieldSelector.currentText || !valueField.text) return
         if (allowFormOpen === undefined) allowFormOpen = true
@@ -754,7 +782,7 @@ Item {
                 }
             } 
             
-            // On ne zoome que si doZoom est vrai
+            // MODIFICATION : On ne zoome que si doZoom est explicitement vrai
             if (doZoom) {
                 zoomTimer.start()
             }
