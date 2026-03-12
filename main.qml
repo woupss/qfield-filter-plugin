@@ -877,7 +877,8 @@ Item {
         id: infoBanner
         parent: mapCanvas; z: 9999
         height: 38
-        anchors.bottom: parent.bottom; anchors.bottomMargin: 60
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: parent.width > parent.height ? 60 : 110
         anchors.horizontalCenter: parent.horizontalCenter
         width: Math.min(bannerLayout.implicitWidth + 30, parent.width - 120)
         radius: 19
