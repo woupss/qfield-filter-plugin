@@ -196,7 +196,7 @@ Item {
     // --- 3. HUD ---
     Rectangle {
         id: hudBar
-        parent: mainWindow.contentItem 
+        parent: mapCanvas 
         z: 9999
         visible: isNavigating
         anchors.bottom: parent.bottom
