@@ -4,6 +4,8 @@ import QtQuick.Layouts
 import Theme
 import org.qfield
 import org.qgis
+import "qrc:/qml" as QFieldItems
+import "."
 
 Item {
     id: filterToolRoot
@@ -17,7 +19,6 @@ Item {
 
     // Variables de sélection
     property var selectedLayer: null
-    property var targetPointLayer: null
 
     // Détection type source
     property bool sourceIsPoints: false
@@ -48,29 +49,51 @@ Item {
     property color origProjectColor: "yellow"
     property var highlightItem: null
 
+    // Palette — une couleur par valeur de filtre
+    property var colorPalette: [
+        "#FF4444",   // valeur 1 — rouge
+        "#4488FF",   // valeur 2 — bleu
+        "#00FF39",   // valeur 3 — vert fluo
+        "#AA00FF",   // valeur 4 — violet
+        "#40767F",   // valeur 5 — cyan fonce
+        "#FF44AA"    // valeur 6 — rose
+    ]
+    property int maxFilterValues: 6
+
+    // [{x, y, colorIdx}] — centroïdes WGS84 avec leur index couleur
+    property var centroidPoints: []
+
+    // [{x, y, colorIdx, count}] — centroïdes regroupés en clusters
+    property var clusteredPoints: []
+    property real clusterRadius: 47   // distance en pixels pour regrouper
+
     // Variables internes
     property var pendingFormLayer: null
     property string pendingFormExpr: ""
     property var internalListView: null
     property bool wasListVisible: true
 
+    // 1. INSTANCIATION DES PLUGINS ENFANTS
+    // -----------------------------------------------------------
+    
+    DriveMe {
+        id: drivemeTool
+    }
+
+
     // === INITIALISATION ===
     Component.onCompleted: {
         iface.addItemToPluginsToolbar(toolbarButton)
         updateLayers()
-        
-        // Initialisation de la couche cible
-        initFixedTargetLayer()
-
         if (featureFormItem) isFormVisible = featureFormItem.visible
-
         var container = iface.findItemByObjectName("mapCanvasContainer")
         if (container) findHighlighterRecursive(container)
         if (qgisProject) origProjectColor = qgisProject.selectionColor
         applyCustomColors()
     }
 
-    // === BOUTON TOOLBAR ===
+
+     // === BOUTON TOOLBAR ===
     QfToolButton {
         id: toolbarButton
         iconSource: "icon.svg"
@@ -104,167 +127,265 @@ Item {
 
     // === LOGIQUE TYPE GÉOMÉTRIE ===
     function checkSourceGeometryType() {
-        if (!selectedLayer) {
-            sourceIsPoints = false
-            return
-        }
+        if (!selectedLayer) { sourceIsPoints = false; return }
         var gType = -1
         try {
-            if (typeof selectedLayer.geometryType === 'number') {
-                gType = selectedLayer.geometryType
-            } else if (typeof selectedLayer.geometryType === 'function') {
-                gType = selectedLayer.geometryType()
-            }
+            if (typeof selectedLayer.geometryType === 'number') gType = selectedLayer.geometryType
+            else if (typeof selectedLayer.geometryType === 'function') gType = selectedLayer.geometryType()
         } catch (e) { console.log("Erreur geom: " + e) }
-
         sourceIsPoints = (gType === 0)
     }
 
-    // === GESTION DE LA COUCHE CIBLE (VERSION CORRIGÉE CHEMIN PLUGIN) ===
-    function initFixedTargetLayer() {
-        var layerName = "Filter Points";
-        
-        // 1. Vérifier si elle est déjà chargée dans le projet (pour éviter les doublons)
-        var layers = ProjectUtils.mapLayers(qgisProject);
-        for (var id in layers) {
-            var l = layers[id];
-            // On vérifie le nom ou si la source contient le nom du fichier
-            if (l.name === layerName || (l.source && l.source.indexOf("filter_points.gpkg") !== -1)) {
-                targetPointLayer = l;
-                return;
+    // === CALCUL CENTROÏDES + CONTOURS PAR VALEUR DE FILTRE ===
+    function computeCentroids() {
+        if (sourceIsPoints) { clearCentroids(); return }
+        if (!selectedLayer || !savedFieldName || !savedFilterText) return
+
+        var fieldName = savedFieldName
+        var values = savedFilterText
+            .split(";")
+            .map(function(v) { return escapeValue(v.toLowerCase().trim()) })
+            .filter(function(v) { return v.length > 0 })
+
+        var empty = GeometryUtils.createGeometryFromWkt("LINESTRING(0 0, 0.000001 0.000001)")
+        var newCentroidPoints = []
+
+        for (var vi = 0; vi < maxFilterValues; vi++) {
+            var oRend = outlineRenderers.itemAt(vi)
+
+            // Index hors plage → vider le renderer contour
+            if (vi >= values.length) {
+                if (oRend && empty) oRend.geometryWrapper.qgsGeometry = empty
+                continue
             }
-        }
 
-        // 2. CALCUL DU CHEMIN RÉEL DU PLUGIN
-        // Qt.resolvedUrl(".") donne le chemin du fichier QML actuel (dans le dossier du plugin)
-        var pluginUrl = Qt.resolvedUrl(".").toString();
-        
-        // Nettoyage de l'URL pour obtenir un chemin de fichier Android valide
-        // On enlève "file://"
-        var rawPath = pluginUrl.replace("file://", "");
-        
-        // Important : décoder les caractères spéciaux (ex: les espaces deviennent %20)
-        rawPath = decodeURIComponent(rawPath);
-        
-        // On s'assure que le chemin finit par un slash
-        if (rawPath.charAt(rawPath.length - 1) !== '/') {
-            rawPath += "/";
-        }
-        
-        // On construit le chemin complet vers le fichier
-        var fullPath = rawPath + "points_layer/filter_points.gpkg";
+            var singleExpr = 'lower("' + fieldName + '") LIKE \'%' + values[vi] + '%\''
+            var verticesDict = ({})
+            var featIdx = 0
 
-        // console.log("Tentative de chargement depuis : " + fullPath);
+            try {
+                var it = LayerUtils.createFeatureIteratorFromExpression(selectedLayer, singleExpr)
+                while (it.hasNext()) {
+                    var feat = it.next()
+                    var geom = feat.geometry
+                    if (!geom) continue
 
-        // 3. Tenter de charger le fichier GPKG
-        var loadedLayer = null;
-        try {
-            // LayerUtils.loadVectorLayer prend le chemin absolu
-            loadedLayer = LayerUtils.loadVectorLayer(fullPath, layerName);
-        } catch(e) {
-            console.log("Erreur chargement fichier: " + e);
-        }
+                    // Point garanti dans la géométrie (ray casting JS)
+                    var centPt = pointInsideGeom(geom)
+                    if (centPt) {
+                        var wgs = GeometryUtils.reprojectPointToWgs84(centPt, selectedLayer.crs)
+                        if (wgs) newCentroidPoints.push({ x: wgs.x, y: wgs.y, colorIdx: vi })
+                    }
 
-        // 4. SI LE FICHIER N'EST PAS ACCESSIBLE -> CRÉER UNE COUCHE MÉMOIRE (Sécurité)
-        if (!loadedLayer || !loadedLayer.isValid) {
-            // mainWindow.displayToast(tr("Fichier plugin introuvable, usage mémoire temporaire."));
-            
-            var crsAuth = "EPSG:4326"; 
-            if (mapCanvas && mapCanvas.mapSettings && mapCanvas.mapSettings.destinationCrs) {
-                crsAuth = mapCanvas.mapSettings.destinationCrs.authId();
+                    // Contour → sommets WGS84
+                    var verts = extractWgs84Vertices(geom, selectedLayer.crs)
+                    if (verts && verts.length >= 3) verticesDict[featIdx] = verts
+                    featIdx++
+                }
+            } catch(e) {
+                console.log("computeCentroids[" + vi + "]: " + e)
             }
-            var memUri = "Point?crs=" + crsAuth + "&index=yes";
-            loadedLayer = LayerUtils.loadVectorLayer(memUri, layerName, "memory");
+
+            // Assigner contours au renderer de cet index
+            if (oRend) buildAndAssignOutline(verticesDict, oRend)
         }
 
-        // 5. Ajouter la couche au projet
-        if (loadedLayer && loadedLayer.isValid) {
-            ProjectUtils.addMapLayer(qgisProject, loadedLayer);
-            targetPointLayer = loadedLayer;
-            if (!targetPointLayer.isEditable) targetPointLayer.startEditing();
-        } else {
-            mainWindow.displayToast(tr("Erreur critique : Impossible de créer la couche de points."));
+        centroidPoints = newCentroidPoints
+        buildClusters()
+        if (mapCanvas) mapCanvas.refresh()
+    }
+
+    function clearCentroids() {
+        centroidPoints = []
+        clusteredPoints = []
+        var empty = GeometryUtils.createGeometryFromWkt("LINESTRING(0 0, 0.000001 0.000001)")
+        if (!empty) return
+        for (var i = 0; i < maxFilterValues; i++) {
+            var or = outlineRenderers.itemAt(i)
+            if (or) or.geometryWrapper.qgsGeometry = empty
         }
     }
 
-    // === CRÉATION CENTROÏDES ===
-    function createTemporaryCentroids() {
-        if (sourceIsPoints) return
-        if (!targetPointLayer) initFixedTargetLayer();
+    function buildClusters() {
+        if (!centroidPoints || centroidPoints.length === 0) { clusteredPoints = []; return }
 
-        if (!selectedLayer || !targetPointLayer) return
-        var features = selectedLayer.selectedFeatures()
+        // Convertit le rayon pixels en degrés WGS84 via l'étendue courante
+        var ext = mapCanvas.mapSettings.extent
+        var destCrs = mapCanvas.mapSettings.destinationCrs
+        var wgs84Ext = null
+        try {
+            wgs84Ext = GeometryUtils.reprojectRectangle(
+                ext, destCrs, CoordinateReferenceSystemUtils.wgs84Crs())
+        } catch(e) {}
 
-        if (!features || features.length === 0) return
+        if (!wgs84Ext || mapCanvas.width === 0 || mapCanvas.height === 0) {
+            clusteredPoints = centroidPoints.slice(); return
+        }
 
-        if (!targetPointLayer.isEditable) targetPointLayer.startEditing()
+        var threshX = clusterRadius * (wgs84Ext.xMaximum - wgs84Ext.xMinimum) / mapCanvas.width
+        var threshY = clusterRadius * (wgs84Ext.yMaximum - wgs84Ext.yMinimum) / mapCanvas.height
 
-        var createdCount = 0
-        dashBoard.activeLayer = targetPointLayer
+        // Algorithme glouton : chaque point non assigné devient centre d'un cluster
+        var assigned = []
+        for (var k = 0; k < centroidPoints.length; k++) assigned.push(false)
 
-        for (var i = 0; i < features.length; i++) {
-            var sourceFeat = features[i]
-            var geom = sourceFeat.geometry
-            if (geom) {
-                var wktString = ""
-                try {
-                    var bbox = GeometryUtils.boundingBox(geom)
-                    if (!bbox) bbox = geom.boundingBox
-                    if (bbox) {
-                        var cx = (bbox.xMinimum + bbox.xMaximum) / 2.0
-                        var cy = (bbox.yMinimum + bbox.yMaximum) / 2.0
-                        wktString = "POINT(" + cx + " " + cy + ")"
-                    }
-                } catch (e) {}
+        var result = []
+        for (var i = 0; i < centroidPoints.length; i++) {
+            if (assigned[i]) continue
+            var p = centroidPoints[i]
+            var sumX = p.x; var sumY = p.y; var clusterCount = 1
+            assigned[i] = true
 
-                if (wktString !== "") {
-                    try {
-                        var cleanGeom = GeometryUtils.createGeometryFromWkt(wktString)
-                        if (cleanGeom) {
-                            var newFeature = FeatureUtils.createBlankFeature(targetPointLayer.fields, cleanGeom)
-                            // overlayFeatureFormDrawer permet de valider la création
-                            overlayFeatureFormDrawer.featureModel.feature = newFeature
-                            if (overlayFeatureFormDrawer.featureModel.create()) {
-                                createdCount++
-                            }
-                        }
-                    } catch (errLoop) { console.log("Erreur geom: " + errLoop) }
+            for (var j = i + 1; j < centroidPoints.length; j++) {
+                if (assigned[j]) continue
+                var q = centroidPoints[j]
+                if (Math.abs(p.x - q.x) < threshX && Math.abs(p.y - q.y) < threshY) {
+                    sumX += q.x; sumY += q.y; clusterCount++
+                    assigned[j] = true
                 }
             }
-        }
 
-        dashBoard.activeLayer = selectedLayer
-
-        if (createdCount > 0) {
-            // Pour une couche mémoire, commitChanges n'est pas toujours requis mais conseillé pour valider
-            targetPointLayer.commitChanges()
-            targetPointLayer.startEditing()
-            if (mapCanvas) mapCanvas.refresh()
+            result.push({
+                x: sumX / clusterCount,
+                y: sumY / clusterCount,
+                colorIdx: p.colorIdx,
+                clusterCount: clusterCount
+            })
         }
+        clusteredPoints = result
     }
 
-    // === NETTOYAGE ===
-    function clearTargetLayer(showFeedback) {
-        if (sourceIsPoints) return
-        if (!targetPointLayer) initFixedTargetLayer();
-
-        var layerToClean = targetPointLayer
-        if (!layerToClean) return
-
-        try {
-            if (!layerToClean.isEditable) layerToClean.startEditing()
-            layerToClean.selectAll()
-            if (layerToClean.deleteSelectedFeatures()) {
-                layerToClean.commitChanges()
-                layerToClean.startEditing()
-                if (mapCanvas) mapCanvas.refresh()
-            } else {
-                layerToClean.rollBack()
-                layerToClean.startEditing()
-            }
-        } catch (e) {
-            if (layerToClean && layerToClean.isEditable) layerToClean.rollBack()
+    // === POINT GARANTI DANS LA GÉOMÉTRIE ===
+    // Ray casting : renvoie true si (px, py) est dans le polygone défini par coords[]
+    function _pointInPolygon(px, py, coords) {
+        var inside = false
+        var n = coords.length
+        for (var i = 0, j = n - 1; i < n; j = i++) {
+            var xi = coords[i][0], yi = coords[i][1]
+            var xj = coords[j][0], yj = coords[j][1]
+            if (((yi > py) !== (yj > py)) &&
+                (px < (xj - xi) * (py - yi) / (yj - yi) + xi))
+                inside = !inside
         }
+        return inside
+    }
+
+    // Extrait les coordonnées brutes (dans le CRS natif) du premier anneau
+    function _extractRawCoords(geom) {
+        var coords = []
+        try {
+            var wkt = geom.asWkt()
+            if (!wkt) return coords
+            var start = wkt.indexOf("((")
+            if (start === -1) start = wkt.indexOf("(")
+            if (start === -1) return coords
+            start = wkt.indexOf("(", start) + 1
+            var end = wkt.indexOf(")", start)
+            if (end === -1) return coords
+            var pairs = wkt.substring(start, end).split(",")
+            for (var i = 0; i < pairs.length; i++) {
+                var xy = pairs[i].trim().split(" ")
+                if (xy.length < 2) continue
+                var x = parseFloat(xy[0]), y = parseFloat(xy[1])
+                if (!isNaN(x) && !isNaN(y)) coords.push([x, y])
+            }
+        } catch(e) {}
+        return coords
+    }
+
+    // Renvoie un QgsPoint garanti à l'intérieur de la géométrie :
+    // 1. Centroïde des sommets (rapide)
+    // 2. Si hors polygone → teste les milieux de chaque arête
+    // 3. Fallback → GeometryUtils.centroid (peut être hors géométrie mais ne plante pas)
+    function pointInsideGeom(geom) {
+        try {
+            var coords = _extractRawCoords(geom)
+            if (coords.length < 3) return GeometryUtils.centroid(geom)
+
+            // Étape 1 : centroïde des sommets
+            var sumX = 0, sumY = 0
+            for (var k = 0; k < coords.length; k++) { sumX += coords[k][0]; sumY += coords[k][1] }
+            var cx = sumX / coords.length
+            var cy = sumY / coords.length
+
+            if (_pointInPolygon(cx, cy, coords)) {
+                // Construire un QgsPoint depuis le WKT
+                var ptGeom = GeometryUtils.createGeometryFromWkt(
+                    "POINT(" + cx + " " + cy + ")")
+                if (ptGeom) return GeometryUtils.centroid(ptGeom)
+            }
+
+            // Étape 2 : milieux des arêtes — poussés vers l'intérieur (10% vers le centroïde)
+            var n = coords.length
+            for (var i = 0; i < n - 1; i++) {
+                var mx = (coords[i][0] + coords[i+1][0]) / 2
+                var my = (coords[i][1] + coords[i+1][1]) / 2
+                if (_pointInPolygon(mx, my, coords)) {
+                    // Décalage de 10% vers le centroïde pour sortir du contour
+                    var px2 = mx + (cx - mx) * 0.40
+                    var py2 = my + (cy - my) * 0.40
+                    var mGeom = GeometryUtils.createGeometryFromWkt(
+                        "POINT(" + px2 + " " + py2 + ")")
+                    if (mGeom) return GeometryUtils.centroid(mGeom)
+                }
+            }
+        } catch(e) {}
+
+        // Étape 3 : fallback QGIS
+        return GeometryUtils.centroid(geom)
+    }
+
+    // === FONCTIONS CONTOURS ===
+    function extractWgs84Vertices(geom, layerCrs) {
+        var verts = []
+        try {
+            var wkt = geom.asWkt()
+            if (!wkt) return verts
+            var start = wkt.indexOf("((")
+            if (start === -1) start = wkt.indexOf("(")
+            if (start === -1) return verts
+            start = wkt.indexOf("(", start) + 1
+            var end = wkt.indexOf(")", start)
+            if (end === -1) return verts
+            var pairs = wkt.substring(start, end).split(",")
+            for (var i = 0; i < pairs.length; i++) {
+                var xy = pairs[i].trim().split(" ")
+                if (xy.length < 2) continue
+                var x = parseFloat(xy[0]), y = parseFloat(xy[1])
+                if (isNaN(x) || isNaN(y)) continue
+                var vWkt = "POINT(" + x + " " + y + ")"
+                var vGeom = GeometryUtils.createGeometryFromWkt(vWkt)
+                if (!vGeom) continue
+                var vPt = GeometryUtils.centroid(vGeom)
+                if (!vPt) continue
+                var wgs = GeometryUtils.reprojectPointToWgs84(vPt, layerCrs)
+                if (wgs) verts.push({ x: wgs.x, y: wgs.y })
+            }
+        } catch(e) { console.log("extractWgs84Vertices: " + e) }
+        return verts
+    }
+
+    function buildAndAssignOutline(verticesDict, renderer) {
+        var empty = GeometryUtils.createGeometryFromWkt("LINESTRING(0 0, 0.000001 0.000001)")
+        var polygons = []
+        for (var fid in verticesDict) {
+            var verts = verticesDict[fid]
+            if (!verts || verts.length < 3) continue
+            var ring = verts.map(function(v) { return v.x.toFixed(6) + " " + v.y.toFixed(6) })
+            var first = verts[0], last = verts[verts.length - 1]
+            if (first.x !== last.x || first.y !== last.y)
+                ring.push(first.x.toFixed(6) + " " + first.y.toFixed(6))
+            polygons.push("((" + ring.join(",") + "))")
+        }
+        if (polygons.length === 0) {
+            if (empty) renderer.geometryWrapper.qgsGeometry = empty
+            return
+        }
+        var wkt = polygons.length === 1
+            ? "POLYGON" + polygons[0]
+            : "MULTIPOLYGON(" + polygons.join(",") + ")"
+        var geom = GeometryUtils.createGeometryFromWkt(wkt)
+        if (geom) renderer.geometryWrapper.qgsGeometry = geom
     }
 
     // === FONCTIONS UTILITAIRES ===
@@ -287,7 +408,6 @@ Item {
         for (var i = 0; i < kids.length; i++) {
             var item = kids[i]
             if (item && item.hasOwnProperty("focusedColor") && item.hasOwnProperty("selectedColor")) {
-                 // Ignore standard lists
                 if (!item.hasOwnProperty("showSelectedOnly") || item.showSelectedOnly === false) {
                     highlightItem = item
                     origFocusColor = item.focusedColor
@@ -328,13 +448,11 @@ Item {
 
     // === TIMERS ===
     Timer {
-        id: autoCreateTimer
-        interval: 500
+        id: computeCentroidsTimer
+        interval: 400
         repeat: false
         onTriggered: {
-            if (targetPointLayer && !sourceIsPoints) {
-                createTemporaryCentroids()
-            }
+            if (!sourceIsPoints) computeCentroids()
         }
     }
 
@@ -347,10 +465,10 @@ Item {
             if (internalListView) {
                 var isListNowVisible = (internalListView.visible === true && internalListView.opacity > 0)
                 if (!wasListVisible && isListNowVisible && selectedLayer) {
-                     if (savedExpr) {
-                         try { selectedLayer.removeSelection(); selectedLayer.selectByExpression(savedExpr) } catch(e){}
-                     } else selectedLayer.selectAll()
-                     useListOffset = false; isReturnAction = true; zoomTimer.restart()
+                    if (savedExpr) {
+                        try { selectedLayer.removeSelection(); selectedLayer.selectByExpression(savedExpr) } catch(e){}
+                    } else selectedLayer.selectAll()
+                    useListOffset = false; isReturnAction = true; zoomTimer.restart()
                 }
                 wasListVisible = isListNowVisible
             }
@@ -381,9 +499,6 @@ Item {
             showFeatureList = false
             if (showListCheck) showListCheck.checked = false
             savedLayerName = ""; savedFieldName = ""; savedFilterText = ""; savedExpr = ""
-            
-            initFixedTargetLayer() // Assurer chargement
-
             useListOffset = false; isReturnAction = false
             if (valueField) { valueField.text = ""; valueField.model = [] }
             selectedLayer = null; pendingFormLayer = null; pendingFormExpr = ""
@@ -396,7 +511,7 @@ Item {
     }
 
     function removeAllFilters() {
-        if (!sourceIsPoints) clearTargetLayer(true)
+        if (!sourceIsPoints) clearCentroids()
         restoreOriginalColors()
 
         var layers = ProjectUtils.mapLayers(qgisProject)
@@ -419,7 +534,8 @@ Item {
         selectedLayer = null
         mapCanvas.refresh()
         updateLayers()
-        updateApplyState()
+        updateApplyState() 
+        if (drivemeTool.isNavigating) drivemeTool.stopNavigation()
         mainWindow.displayToast(tr("Filter deleted"))
     }
 
@@ -438,16 +554,13 @@ Item {
 
         if (bbox.width === 0 && bbox.height === 0) {
             var epsilon = 0.00001
-            bbox.xMinimum -= epsilon;
-            bbox.xMaximum += epsilon
-            bbox.yMinimum -= epsilon;
-            bbox.yMaximum += epsilon
+            bbox.xMinimum -= epsilon; bbox.xMaximum += epsilon
+            bbox.yMinimum -= epsilon; bbox.yMaximum += epsilon
         }
 
         try {
             var destCrs = mapCanvas.mapSettings.destinationCrs
             var finalExtent = GeometryUtils.reprojectRectangle(bbox, selectedLayer.crs, destCrs)
-
             if (!finalExtent) return
 
             var cx = (finalExtent.xMinimum + finalExtent.xMaximum) / 2.0
@@ -455,11 +568,11 @@ Item {
             var minSize = (Math.abs(cx) > 180) ? 200.0 : 0.002
 
             if (finalExtent.width < minSize) {
-                finalExtent.xMinimum = cx - (minSize / 2.0);
+                finalExtent.xMinimum = cx - (minSize / 2.0)
                 finalExtent.xMaximum = cx + (minSize / 2.0)
             }
             if (finalExtent.height < minSize) {
-                finalExtent.yMinimum = cy - (minSize / 2.0);
+                finalExtent.yMinimum = cy - (minSize / 2.0)
                 finalExtent.yMaximum = cy + (minSize / 2.0)
             }
 
@@ -467,50 +580,33 @@ Item {
             var screenRatio = currentMapExtent.width / currentMapExtent.height
             var h = (finalExtent.height === 0) ? 0.001 : finalExtent.height
             var geomRatio = finalExtent.width / h
-            
-            // --- MODIFICATION MARGE ---
-            // 1.1 = 10% de marge. 1.25 = 25% de marge (plus aéré)
-            var marginScale = 1.25 
-            // --------------------------
+            var marginScale = 1.05
+            var nw = 0, nh = 0
 
-            var nw = 0;
-            var nh = 0
             if (geomRatio > screenRatio) {
-                nw = finalExtent.width * marginScale;
+                nw = finalExtent.width * marginScale
                 nh = nw / screenRatio
             } else {
-                nh = finalExtent.height * marginScale;
+                nh = finalExtent.height * marginScale
                 nw = nh * screenRatio
             }
 
-            if (isReturnAction) {
-                nw = nw * 0.65;
-                nh = nh * 0.65;
-                isReturnAction = false
-            }
-            if (showFeatureList && useListOffset) {
-                cy = cy - (nh * 0.25)
-            }
+            if (isReturnAction) { nw = nw * 0.65; nh = nh * 0.65; isReturnAction = false }
+            if (showFeatureList && useListOffset) cy = cy - (nh * 0.25)
 
-            finalExtent.xMinimum = cx - (nw / 2.0);
-            finalExtent.xMaximum = cx + (nw / 2.0)
-            finalExtent.yMinimum = cy - (nh / 2.0);
-            finalExtent.yMaximum = cy + (nh / 2.0)
+            finalExtent.xMinimum = cx - (nw / 2.0); finalExtent.xMaximum = cx + (nw / 2.0)
+            finalExtent.yMinimum = cy - (nh / 2.0); finalExtent.yMaximum = cy + (nh / 2.0)
 
             mapCanvas.mapSettings.setExtent(finalExtent, true)
             mapCanvas.refresh()
             applyCustomColors()
 
-            // --- DÉSACTIVATION SÉLECTION SI TYPE POINT ---
             if (sourceIsPoints) {
                 selectedLayer.removeSelection()
                 selectedLayer.triggerRepaint()
                 mapCanvas.refresh()
             }
-
-        } catch (e) {
-            console.error("Erreur Zoom: " + e)
-        }
+        } catch (e) { console.error("Erreur Zoom: " + e) }
     }
 
     function applyFilter(allowFormOpen, doZoom) {
@@ -522,9 +618,8 @@ Item {
             savedLayerName = layerSelector.currentText
             savedFieldName = fieldSelector.currentText
             savedFilterText = valueField.text
-            
-            initFixedTargetLayer()
-            if (!sourceIsPoints) clearTargetLayer(false)
+
+            if (!sourceIsPoints) clearCentroids()
 
             var fieldName = savedFieldName
             var values = savedFilterText.split(";").map(function(v) { return escapeValue(v.toLowerCase().trim()) }).filter(function(v) { return v.length > 0 })
@@ -547,7 +642,7 @@ Item {
             if (doZoom) { useListOffset = true; isReturnAction = false; zoomTimer.start() }
             filterActive = true
 
-            if (targetPointLayer && !sourceIsPoints) autoCreateTimer.restart()
+            if (!sourceIsPoints) computeCentroidsTimer.restart()
         } catch(e) { mainWindow.displayToast(tr("Error: ") + e) }
     }
 
@@ -610,7 +705,6 @@ Item {
         var names = selectedLayer.fields.names
         var logicalIndex = -1
         for (var i = 0; i < names.length; i++) { if (names[i] === uiName) { logicalIndex = i; break } }
-        
         if (logicalIndex === -1) { valueField.isLoading = false; return }
 
         var realIndex = -1
@@ -632,9 +726,9 @@ Item {
                 if (val !== null && val !== undefined) {
                     var strVal = String(val).trim()
                     if (strVal !== "" && strVal !== "NULL") {
-                         var exists = false
-                         for(var p=0;p<parts.length-1;p++) if(parts[p].trim()===strVal) exists=true
-                         if(!uniqueValues[strVal] && !exists) { uniqueValues[strVal]=true; valuesArray.push(strVal); count++ }
+                        var exists = false
+                        for(var p=0;p<parts.length-1;p++) if(parts[p].trim()===strVal) exists=true
+                        if(!uniqueValues[strVal] && !exists) { uniqueValues[strVal]=true; valuesArray.push(strVal); count++ }
                     }
                 }
                 max_scan--
@@ -648,14 +742,16 @@ Item {
     }
 
     function updateApplyState() {
-        if (applyButton && selectedLayer && fieldSelector && valueField) {
-            applyButton.enabled = selectedLayer !== null && fieldSelector.currentText && fieldSelector.currentText !== tr("Select a field") && valueField.text.length > 0
-        }
+    if (applyButton && selectedLayer && fieldSelector && valueField) {
+        var isReady = selectedLayer !== null && fieldSelector.currentText && fieldSelector.currentText !== tr("Select a field") && valueField.text.length > 0
+        applyButton.enabled = isReady
+        if (filterAndDriveButton) filterAndDriveButton.enabled = isReady
     }
+}
 
     function escapeValue(value) { return value.trim().replace(/'/g, "''") }
 
-        function tr(text) {
+    function tr(text) {
         var isFr = Qt.locale().name.substring(0, 2) === "fr"
         var dic = {
             "FILTER": "FILTRE",
@@ -667,9 +763,9 @@ Item {
             "Show all geometries (+filtered)": "Afficher toutes géométries (+filtrées)",
             "Show feature list": "Afficher liste des entités",
             "Apply filter": "Appliquer le filtre",
-            "Delete filter": "Supprimer le filtre",
-            // Message d'erreur spécifique ajouté
-            "Erreur: filter_points.gpkg introuvable ou corrompu.": "Erreur: filter_points.gpkg introuvable dans le dossier du plugin."
+            "Filter & Drive me": "Appliquer le filtre & Guide moi",
+            "Delete filter": "Supprimer le filtre"
+
         }
         return isFr && dic[text] ? dic[text] : text
     }
@@ -683,7 +779,7 @@ Item {
                 internalListView = null; wasListVisible = true; showFeatureList = false
                 if (showListCheck) showListCheck.checked = false
                 if (filterActive) {
-                   if (selectedLayer) { mapCanvas.mapSettings.selectionColor = targetSelectedColor; selectedLayer.triggerRepaint(); mapCanvas.refresh() }
+                    if (selectedLayer) { mapCanvas.mapSettings.selectionColor = targetSelectedColor; selectedLayer.triggerRepaint(); mapCanvas.refresh() }
                 }
             }
         }
@@ -696,31 +792,109 @@ Item {
         }
     }
 
+    // === RENDERERS CONTOURS — un par valeur de filtre ===
+    Repeater {
+        id: outlineRenderers
+        model: filterToolRoot.maxFilterValues
+        QFieldItems.GeometryRenderer {
+            parent: mapCanvas
+            mapSettings: mapCanvas.mapSettings
+            geometryWrapper.crs: CoordinateReferenceSystemUtils.wgs84Crs()
+            lineWidth: 2
+            color: filterToolRoot.colorPalette[index]
+            opacity: filterToolRoot.filterActive && !filterToolRoot.sourceIsPoints ? 0.75 : 0.0
+        }
+    }
+
+    // Recalcule les clusters à chaque zoom / pan
+    Connections {
+        target: mapCanvas ? mapCanvas.mapSettings : null
+        ignoreUnknownSignals: true
+        function onExtentChanged() {
+            if (filterToolRoot.filterActive && !filterToolRoot.sourceIsPoints
+                    && filterToolRoot.centroidPoints.length > 0)
+                filterToolRoot.buildClusters()
+        }
+    }
+
+    // === CENTROÏDES — un Rectangle par cluster via CoordinateTransformer + MapToScreen ===
+    Repeater {
+        id: centroidItems
+        model: filterToolRoot.clusteredPoints
+
+        Item {
+            parent: mapCanvas
+
+            CoordinateTransformer {
+                id: ct
+                sourceCrs: CoordinateReferenceSystemUtils.wgs84Crs()
+                destinationCrs: mapCanvas.mapSettings.destinationCrs
+                transformContext: qgisProject
+                    ? qgisProject.transformContext
+                    : CoordinateReferenceSystemUtils.emptyTransformContext()
+                // centroid() retourne un QgsPoint — type attendu par sourcePosition
+                sourcePosition: {
+                    var g = GeometryUtils.createGeometryFromWkt(
+                                "POINT(" + modelData.x + " " + modelData.y + ")")
+                    return g ? GeometryUtils.centroid(g) : null
+                }
+            }
+
+            MapToScreen {
+                id: mts
+                mapSettings: mapCanvas.mapSettings
+                mapPoint: ct.projectedPosition
+            }
+
+            // Point seul : cercle coloré 12×12 comme avant
+            // Cluster   : cercle plus grand, fond foncé, contour coloré, chiffre au centre
+            Rectangle {
+                x: mts.screenPoint.x - width / 2
+                y: mts.screenPoint.y - height / 2
+                width:  modelData.clusterCount > 1 ? 22 : 12
+                height: modelData.clusterCount > 1 ? 22 : 12
+                radius: modelData.clusterCount > 1 ? 11 : 6
+                color:        modelData.clusterCount > 1 ? filterToolRoot.colorPalette[modelData.colorIdx]
+                                                  : filterToolRoot.colorPalette[modelData.colorIdx]
+                border.color: modelData.clusterCount > 1 ? "yellow"
+                                                  : "white"
+                border.width: modelData.clusterCount > 1 ? 2 : 1.5
+                visible: filterToolRoot.filterActive && !filterToolRoot.sourceIsPoints
+
+                Text {
+                    anchors.centerIn: parent
+                    text: modelData.clusterCount > 1 ? modelData.clusterCount : ""
+                    color: "white"
+                    font.bold: true
+                    font.pixelSize: 10
+                    visible: modelData.clusterCount > 1
+                }
+            }
+        }
+    }
+
     Rectangle {
         id: infoBanner
         parent: mapCanvas; z: 9999
-        height: 38                              // Hauteur confortable
+        height: 38
         anchors.bottom: parent.bottom; anchors.bottomMargin: 60
         anchors.horizontalCenter: parent.horizontalCenter
         width: Math.min(bannerLayout.implicitWidth + 30, parent.width - 120)
-        radius: 19                              // 19 = la moitié de 38 pour un arrondi parfait
+        radius: 19
         color: "#B3333333"; border.width: 0
         visible: filterToolRoot.filterActive && !filterToolRoot.isFormVisible
 
         RowLayout {
             id: bannerLayout
             anchors.fill: parent
-            // --- CORRECTION MAJEURE ICI ---
-            // On remplace anchors.margins: 15 par seulement gauche/droite
             anchors.leftMargin: 15
             anchors.rightMargin: 15
-            // ------------------------------
             spacing: 10
 
-            Rectangle { 
-                width: 8; height: 8; radius: 4; 
-                color: targetSelectedColor; 
-                Layout.alignment: Qt.AlignVCenter 
+            Rectangle {
+                width: 8; height: 8; radius: 4
+                color: targetSelectedColor
+                Layout.alignment: Qt.AlignVCenter
             }
 
             Item {
@@ -728,25 +902,20 @@ Item {
                 Layout.preferredWidth: bannerText.contentWidth
                 Layout.fillWidth: true; Layout.fillHeight: true
                 clip: true
-                
+
                 Text {
                     id: bannerText
-                    // --- CORRECTION TEXTE ---
-                    height: parent.height                  // Prend toute la hauteur disponible
-                    verticalAlignment: Text.AlignVCenter   // Centre le texte
-                    renderType: Text.NativeRendering       // Meilleur rendu sur Android
-                    // ------------------------
-
+                    height: parent.height
+                    verticalAlignment: Text.AlignVCenter
+                    renderType: Text.NativeRendering
                     text: {
                         var val = filterToolRoot.savedFilterText.trim()
                         if (val.endsWith(";")) val = val.substring(0, val.length - 1).trim()
                         return filterToolRoot.savedLayerName + " | " + filterToolRoot.savedFieldName + " : " + val
                     }
-                    color: "white"; font.bold: true; font.pixelSize: 14 // Légèrement agrandi à 14
-
+                    color: "white"; font.bold: true; font.pixelSize: 14
                     wrapMode: Text.NoWrap
                     horizontalAlignment: Text.AlignLeft
-                    
                     x: 0
                     SequentialAnimation on x {
                         running: clipContainer && bannerText.contentWidth > clipContainer.width && infoBanner.visible
@@ -774,7 +943,7 @@ Item {
         ColumnLayout {
             id: mainCol; anchors.fill: parent; anchors.margins: 8; spacing: 10
             Label { text: tr("FILTER"); font.bold: true; font.pointSize: 18; horizontalAlignment: Text.AlignHCenter; Layout.fillWidth: true }
-            
+
             QfComboBox {
                 id: layerSelector; Layout.fillWidth: true; Layout.preferredHeight: 35; model: []
                 onCurrentTextChanged: {
@@ -802,7 +971,7 @@ Item {
                         delegate: ItemDelegate {
                             text: modelData; width: listView.width
                             onClicked: {
-                                var txt=valueField.text; var last=txt.lastIndexOf(";");
+                                var txt=valueField.text; var last=txt.lastIndexOf(";")
                                 valueField.text = (last===-1 ? modelData : txt.substring(0, last+1)+" "+modelData) + " ; "
                                 suggestionPopup.close(); valueField.forceActiveFocus(); valueField.model=[]
                             }
@@ -823,20 +992,33 @@ Item {
                 }
             }
 
-            RowLayout {
-                Layout.fillWidth: true; spacing: 5
-                Button {
-                    text: tr("Delete filter"); Layout.fillWidth: true
-                    background: Rectangle { color: "#333333"; radius: 10 }
-                    contentItem: Text { text: parent.text; color: "white"; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                    onClicked: { removeAllFilters(); searchDialog.close() }
-                }
-                Button {
-                    id: applyButton; text: tr("Apply filter"); enabled: false; Layout.fillWidth: true
-                    background: Rectangle { radius: 10; color: enabled ? "#80cc28" : "#e0e0e0" }
-                    contentItem: Text { text: parent.text; color: enabled ? "white" : "#666666"; font.bold: true; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                    onClicked: { applyFilter(true, true); searchDialog.close() }
-                }
+            ColumnLayout {
+    Layout.fillWidth: true
+    spacing: 5
+
+    RowLayout {
+        Layout.fillWidth: true; spacing: 5
+        Button {
+            text: tr("Delete filter"); Layout.fillWidth: true
+            background: Rectangle { color: "#333333"; radius: 10 }
+            contentItem: Text { text: parent.text; color: "white"; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+            onClicked: { removeAllFilters(); searchDialog.close() }
+        }
+        Button {
+            id: applyButton; text: tr("Apply filter"); enabled: false; Layout.fillWidth: true
+            background: Rectangle { radius: 10; color: enabled ? "#80cc28" : "#e0e0e0" }
+            contentItem: Text { text: parent.text; color: enabled ? "white" : "#666666"; font.bold: true; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+            onClicked: { applyFilter(true, true); searchDialog.close() }
+        }
+    }
+
+    Button {
+        id: filterAndDriveButton; text: tr("Filter & Drive me"); enabled: false; Layout.fillWidth: true
+        background: Rectangle { radius: 10; color: enabled ? "#80cc28" : "#e0e0e0" }
+        contentItem: Text { text: parent.text; color: enabled ? "white" : "#666666"; font.bold: true; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+        onClicked: { applyFilter(true, true); drivemeTool.startWithLayer(selectedLayer); searchDialog.close() }
+    }
+
             }
         }
     }
