@@ -934,93 +934,120 @@ Item {
     Dialog {
         id: searchDialog
         parent: mainWindow.contentItem
-        modal: true; width: Math.min(450, mainWindow.width * 0.90)
-        height: mainCol.implicitHeight + 30
-        x: (parent.width - width) / 2
-        y: (parent.height - height) / 2 - (parent.height > parent.width ? parent.height*0.1 : 0)
-        background: Rectangle { color: "white"; border.color: "#80cc28"; border.width: 3; radius: 8 }
-        MouseArea { anchors.fill: parent; z: -1; onClicked: { if(valueField.focus) {valueField.focus=false; suggestionPopup.close()}; mouse.accepted=false } }
+        modal: true
+        width: Math.min(mainWindow.width * 0.9, 450)
+        x: (mainWindow.width - width) / 2
+        y: (mainWindow.height - height) / 2
+        background: Rectangle { color: "white"; border.color: Theme.mainColor; border.width: 2; radius: 8 }
 
-        ColumnLayout {
-            id: mainCol; anchors.fill: parent; anchors.margins: 8; spacing: 10
-            Label { text: tr("FILTER"); font.bold: true; font.pointSize: 18; horizontalAlignment: Text.AlignHCenter; Layout.fillWidth: true }
+        property bool isLandscape: mainWindow.width > mainWindow.height
+        property real scaleFactor: isLandscape
+            ? Math.min(1.0, mainWindow.height * 1.00 / Math.max(innerCol.implicitHeight + 56, 1))
+            : 1.0
 
-            QfComboBox {
-                id: layerSelector; Layout.fillWidth: true; Layout.preferredHeight: 35; model: []
-                onCurrentTextChanged: {
-                    savedExpr = ""; if (currentText === tr("Select a layer")) { selectedLayer=null; fieldSelector.model=[tr("Select a field")]; return }
-                    selectedLayer = getLayerByName(currentText); updateFields(); checkSourceGeometryType()
+        scale: scaleFactor
+        topPadding:    isLandscape ? 10 : 10
+        bottomPadding: isLandscape ? 8 : 10
+        leftPadding:   isLandscape ? 10 : 0
+        rightPadding:  isLandscape ? 10 : 0
+
+        contentItem: ColumnLayout {
+            spacing: 0
+
+            MouseArea { anchors.fill: parent; z: -1; onClicked: { if(valueField.focus) {valueField.focus=false; suggestionPopup.close()}; mouse.accepted=false } }
+
+            ColumnLayout {
+                id: innerCol
+                Layout.fillWidth: true
+                Layout.topMargin: 6
+                Layout.leftMargin: 12
+                Layout.rightMargin: 12
+                Layout.bottomMargin: 6
+                spacing: 10
+
+                Label { text: tr("FILTER"); font.bold: true; font.pointSize: 18; horizontalAlignment: Text.AlignHCenter; Layout.fillWidth: true }
+
+                QfComboBox {
+                    id: layerSelector; Layout.fillWidth: true; Layout.preferredHeight: 35; model: []
+                    onCurrentTextChanged: {
+                        savedExpr = ""; if (currentText === tr("Select a layer")) { selectedLayer=null; fieldSelector.model=[tr("Select a field")]; return }
+                        selectedLayer = getLayerByName(currentText); updateFields(); checkSourceGeometryType()
+                    }
                 }
-            }
-            QfComboBox {
-                id: fieldSelector; Layout.fillWidth: true; Layout.preferredHeight: 35; model: []
-                onActivated: { valueField.text=""; valueField.model=[]; updateApplyState() }
-                onCurrentTextChanged: updateApplyState()
-            }
-            Label { text: tr("Filter value(s) (separate by ;) :") }
-            TextField {
-                id: valueField; Layout.fillWidth: true; Layout.preferredHeight: 35; placeholderText: tr("Type to search (ex: Paris; Lyon)...")
-                property var model: []; property bool isLoading: false
-                onActiveFocusChanged: { if (activeFocus && text.trim().length > 0) { if (model.length>0) suggestionPopup.open(); else performDynamicSearch() } }
-                onTextEdited: { if(text.trim().length>0) searchDelayTimer.restart(); else {searchDelayTimer.stop(); suggestionPopup.close()} updateApplyState() }
-                Popup {
-                    id: suggestionPopup; y: valueField.height; width: valueField.width; height: Math.min(listView.contentHeight+10, 200); padding: 1
-                    closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutsideParent
-                    background: Rectangle { color: "white"; border.color: "#bdbdbd" }
-                    ListView {
-                        id: listView; anchors.fill: parent; clip: true; model: valueField.model
-                        delegate: ItemDelegate {
-                            text: modelData; width: listView.width
-                            onClicked: {
-                                var txt=valueField.text; var last=txt.lastIndexOf(";")
-                                valueField.text = (last===-1 ? modelData : txt.substring(0, last+1)+" "+modelData) + " ; "
-                                suggestionPopup.close(); valueField.forceActiveFocus(); valueField.model=[]
+                QfComboBox {
+                    id: fieldSelector; Layout.fillWidth: true; Layout.preferredHeight: 35; model: []
+                    onActivated: { valueField.text=""; valueField.model=[]; updateApplyState() }
+                    onCurrentTextChanged: updateApplyState()
+                }
+                Label { text: tr("Filter value(s) (separate by ;) :") }
+                TextField {
+                    id: valueField; Layout.fillWidth: true; Layout.preferredHeight: 35
+                    placeholderText: tr("Type to search (ex: Paris; Lyon)...")
+                    property var model: []; property bool isLoading: false
+                    onActiveFocusChanged: { if (activeFocus && text.trim().length > 0) { if (model.length>0) suggestionPopup.open(); else performDynamicSearch() } }
+                    onTextEdited: { if(text.trim().length>0) searchDelayTimer.restart(); else {searchDelayTimer.stop(); suggestionPopup.close()} updateApplyState() }
+                    Popup {
+                        id: suggestionPopup; y: valueField.height; width: valueField.width; height: Math.min(listView.contentHeight+10, 200); padding: 1
+                        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutsideParent
+                        background: Rectangle { color: "white"; border.color: "#bdbdbd" }
+                        ListView {
+                            id: listView; anchors.fill: parent; clip: true; model: valueField.model
+                            delegate: ItemDelegate {
+                                text: modelData; width: listView.width
+                                onClicked: {
+                                    var txt=valueField.text; var last=txt.lastIndexOf(";")
+                                    valueField.text = (last===-1 ? modelData : txt.substring(0, last+1)+" "+modelData) + " ; "
+                                    suggestionPopup.close(); valueField.forceActiveFocus(); valueField.model=[]
+                                }
                             }
                         }
                     }
                 }
-            }
 
-            ColumnLayout {
-                Layout.fillWidth: true; spacing: -10
-                CheckBox {
-                    id: showAllCheck; text: tr("Show all geometries (+filtered)"); checked: showAllFeatures
-                    onToggled: { showAllFeatures = checked; if (filterActive) applyFilter(true, false) }
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    Layout.topMargin: -2
+                  
+                    Layout.bottomMargin: -2
+                    spacing: -16
+                    CheckBox {
+                        id: showAllCheck; text: tr("Show all geometries (+filtered)"); checked: showAllFeatures; Layout.fillWidth: true
+                        onToggled: { showAllFeatures = checked; if (filterActive) applyFilter(true, false) }
+                    }
+                    CheckBox {
+                        id: showListCheck; text: tr("Show feature list"); checked: showFeatureList; Layout.fillWidth: true
+                        onToggled: { showFeatureList = checked; if (filterActive && checked) applyFilter(true, false) }
+                    }
                 }
-                CheckBox {
-                    id: showListCheck; text: tr("Show feature list"); checked: showFeatureList
-                    onToggled: { showFeatureList = checked; if (filterActive && checked) applyFilter(true, false) }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    Layout.topMargin: -2
+                  
+                    Layout.bottomMargin: 4
+                    spacing: 5
+                    Button {
+                        text: tr("Delete filter"); Layout.fillWidth: true; Layout.topMargin: -2; Layout.bottomMargin: -2
+                        background: Rectangle { color: "#333333"; radius: 10 }
+                        contentItem: Text { text: parent.text; color: "white"; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                        onClicked: { removeAllFilters(); searchDialog.close() }
+                    }
+                    Button {
+                        id: applyButton; text: tr("Apply filter"); enabled: false; Layout.fillWidth: true; Layout.topMargin: -2; Layout.bottomMargin: -2
+                        background: Rectangle { radius: 10; color: enabled ? "#80cc28" : "#e0e0e0" }
+                        contentItem: Text { text: parent.text; color: enabled ? "white" : "#666666"; font.bold: true; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                        onClicked: { applyFilter(true, true); searchDialog.close() }
+                    }
+                }
+
+                Button {
+                    id: filterAndDriveButton; text: tr("Filter & Drive me"); enabled: false; Layout.fillWidth: true; Layout.topMargin: -2
+                    background: Rectangle { radius: 10; color: enabled ? "#80cc28" : "#e0e0e0" }
+                    contentItem: Text { text: parent.text; color: enabled ? "white" : "#666666"; font.bold: true; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                    onClicked: { applyFilter(true, true); drivemeTool.startWithLayer(selectedLayer); searchDialog.close() }
                 }
             }
-
-            ColumnLayout {
-    Layout.fillWidth: true
-    spacing: 5
-
-    RowLayout {
-        Layout.fillWidth: true; spacing: 5
-        Button {
-            text: tr("Delete filter"); Layout.fillWidth: true
-            background: Rectangle { color: "#333333"; radius: 10 }
-            contentItem: Text { text: parent.text; color: "white"; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-            onClicked: { removeAllFilters(); searchDialog.close() }
-        }
-        Button {
-            id: applyButton; text: tr("Apply filter"); enabled: false; Layout.fillWidth: true
-            background: Rectangle { radius: 10; color: enabled ? "#80cc28" : "#e0e0e0" }
-            contentItem: Text { text: parent.text; color: enabled ? "white" : "#666666"; font.bold: true; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-            onClicked: { applyFilter(true, true); searchDialog.close() }
         }
     }
 
-    Button {
-        id: filterAndDriveButton; text: tr("Filter & Drive me"); enabled: false; Layout.fillWidth: true
-        background: Rectangle { radius: 10; color: enabled ? "#80cc28" : "#e0e0e0" }
-        contentItem: Text { text: parent.text; color: enabled ? "white" : "#666666"; font.bold: true; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-        onClicked: { applyFilter(true, true); drivemeTool.startWithLayer(selectedLayer); searchDialog.close() }
-    }
-
-            }
-        }
-    }
 }
