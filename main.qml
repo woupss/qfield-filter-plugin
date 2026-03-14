@@ -239,7 +239,7 @@ Item {
             for (var j = i + 1; j < centroidPoints.length; j++) {
                 if (assigned[j]) continue
                 var q = centroidPoints[j]
-                if (Math.abs(p.x - q.x) < threshX && Math.abs(p.y - q.y) < threshY) {
+                if (q.colorIdx === p.colorIdx && Math.abs(p.x - q.x) < threshX && Math.abs(p.y - q.y) < threshY) {
                     sumX += q.x; sumY += q.y; clusterCount++
                     assigned[j] = true
                 }
