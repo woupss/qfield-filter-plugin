@@ -351,7 +351,7 @@ function getHudText() {
         polygonCenters = {}
         traveledCoords = []
 
-        iface.logMessage("Arrêt.", Qgis.Info)
+      //  iface.logMessage("Arrêt.", Qgis.Info)
         mapCanvas.refresh()
     }
 
@@ -402,7 +402,7 @@ function getHudText() {
             }
 
         } catch(e) {
-            iface.logMessage("Erreur startNav: " + e.toString(), Qgis.Critical)
+          //  iface.logMessage("Erreur startNav: " + e.toString(), Qgis.Critical)
         }
     }
 
@@ -612,7 +612,7 @@ function getHudText() {
             optimizeEntireTour(startPos)
         }
         
-        iface.logMessage("Nav démarrée.", Qgis.Info)
+      //  iface.logMessage("Nav démarrée.", Qgis.Info)
         updateNavigationLoop()
     }
 
@@ -637,7 +637,7 @@ function getHudText() {
                         if (newOrder.length === unvisitedPoints.length) {
                             unvisitedPoints = newOrder
                             currentTarget = unvisitedPoints[0]
-                            iface.logMessage("Tournée optimisée par OSRM.", Qgis.Success)
+                            // iface.logMessage("Tournée optimisée par OSRM.", Qgis.Success)
                         }
                     }
                 } catch(e) {}
@@ -1113,7 +1113,7 @@ if (!next) {
             let dy = p2[1] - p1[1]
             let segLen = getDistMeters({ x: p1[0], y: p1[1] }, { x: p2[0], y: p2[1] })
             if (segLen > 0) {
-                // 10m en degrés (approximation : 1 degré �� 111320m en lat, cos(lat)*111320 en lon)
+                // 10m en degrés (approximation : 1 degré ���� 111320m en lat, cos(lat)*111320 en lon)
                 let mPerDegLat = 111320
                 let mPerDegLon = Math.cos(p2[1] * Math.PI / 180) * 111320
                 let extLon = p2[0] + (dx / segLen) * (10 / mPerDegLon)
